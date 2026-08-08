@@ -1,16 +1,36 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Search, UserPlus, FileSpreadsheet, Shield, Eye, Edit3, Trash2, Users, UserCheck, Clock } from 'lucide-react';
-import { usersData } from '../data/mockData';
 import { Doughnut } from 'react-chartjs-2';
+import { userApi } from '../services/api';
 
 export default function RoleManagementScreen() {
-  const [users, setUsers] = useState(usersData);
+  const [users, setUsers] = useState([]);
   const [search, setSearch] = useState('');
+  const loadUsers = () => { userApi.list().then(setUsers).catch(() => setUsers([])); };
+  useEffect(() => { loadUsers(); }, []);
+
+  const handleAddUser = async () => {
+    const full_name = window.prompt("Enter Full Name:");
+    if (!full_name) return;
+    const email = window.prompt("Enter Email Address:");
+    if (!email) return;
+    const password = window.prompt("Enter Password:");
+    if (!password) return;
+    const role = window.prompt("Enter Role (Admin, Coordinator, HOD):", "Coordinator");
+    if (!role) return;
+
+    try {
+      await userApi.create({ full_name, email, password, role });
+      loadUsers();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
   const donutData = {
-    labels: ['Faculty (71.4%)', 'Timetable Coordinator (14.3%)', 'HOD (11.9%)', 'Super Admin (2.4%)'],
+    labels: ['Admin', 'Coordinator', 'HOD'],
     datasets: [{
-      data: [30, 6, 5, 1],
+      data: ['Admin', 'Coordinator', 'HOD'].map((role) => users.filter((user) => user.role === role).length),
       backgroundColor: ['#005E38', '#3B82F6', '#8B5CF6', '#EF4444'],
       borderWidth: 0
     }]
@@ -25,7 +45,7 @@ export default function RoleManagementScreen() {
           <div className="stat-icon-wrapper"><Users size={22} /></div>
           <div>
             <div className="stat-label">Total Users</div>
-            <div className="stat-value">42</div>
+            <div className="stat-value">{users.length}</div>
             <div className="stat-subtext">Across all roles</div>
           </div>
         </div>
@@ -34,7 +54,7 @@ export default function RoleManagementScreen() {
           <div className="stat-icon-wrapper"><UserCheck size={22} /></div>
           <div>
             <div className="stat-label">Active Users</div>
-            <div className="stat-value">38</div>
+            <div className="stat-value">{users.filter((user) => user.status === 'Active').length}</div>
             <div className="stat-subtext">90.5% of total</div>
           </div>
         </div>
@@ -43,7 +63,7 @@ export default function RoleManagementScreen() {
           <div className="stat-icon-wrapper" style={{ background: '#F3E8FF', color: '#8B5CF6' }}><Clock size={22} /></div>
           <div>
             <div className="stat-label">Inactive Users</div>
-            <div className="stat-value">4</div>
+            <div className="stat-value">{users.filter((user) => user.status !== 'Active').length}</div>
             <div className="stat-subtext">9.5% of total</div>
           </div>
         </div>
@@ -75,13 +95,9 @@ export default function RoleManagementScreen() {
             </div>
             <select className="form-select">
               <option>All Roles</option>
-              <option>Super Admin</option>
+              <option>Admin</option>
               <option>HOD</option>
-              <option>Timetable Coordinator</option>
-              <option>Faculty</option>
-            </select>
-            <select className="form-select">
-              <option>All Departments</option>
+              <option>Coordinator</option>
             </select>
           </div>
 
@@ -100,23 +116,23 @@ export default function RoleManagementScreen() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {users.filter((u) => `${u.name} ${u.email}`.toLowerCase().includes(search.toLowerCase())).map((u) => (
                   <tr key={u.id}>
-                    <td style={{ fontWeight: '800', color: '#64748B' }}>{u.id}</td>
+                  <td style={{ fontWeight: '800', color: '#64748B' }}>{u.id}</td>
                     <td style={{ fontWeight: '700' }}>{u.name}</td>
                     <td>{u.email}</td>
                     <td>
                       <span className={
-                        u.role === 'Super Admin' ? 'badge badge-purple' :
+                        u.role === 'Admin' ? 'badge badge-purple' :
                         u.role === 'HOD' ? 'badge badge-info' :
-                        u.role === 'Timetable Coordinator' ? 'badge badge-warning' : 'badge badge-active'
+                        u.role === 'Coordinator' ? 'badge badge-warning' : 'badge badge-active'
                       }>
                         {u.role}
                       </span>
                     </td>
-                    <td>{u.dept}</td>
+                    <td>{u.department || '—'}</td>
                     <td><span className="badge badge-active">{u.status}</span></td>
-                    <td style={{ fontSize: '0.78rem' }}>{u.lastLogin}</td>
+                    <td style={{ fontSize: '0.78rem' }}>{u.last_login ? new Date(u.last_login).toLocaleString() : '—'}</td>
                     <td>
                       <div className="table-actions">
                         <button className="action-icon-btn"><Eye size={16} /></button>
@@ -143,7 +159,7 @@ export default function RoleManagementScreen() {
           <div className="skit-card">
             <span className="card-title" style={{ marginBottom: '14px' }}>Quick Actions</span>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <button className="btn-primary" style={{ width: '100%' }}><UserPlus size={16} /> Add New User</button>
+              <button className="btn-primary" style={{ width: '100%' }} onClick={handleAddUser}><UserPlus size={16} /> Add New User</button>
               <button className="btn-secondary" style={{ width: '100%' }}><FileSpreadsheet size={16} /> Import Users (Excel)</button>
               <button className="btn-secondary" style={{ width: '100%' }}><Shield size={16} /> Manage Roles & Permissions</button>
             </div>

@@ -1,4 +1,4 @@
-# SKIT AI Academic Scheduling System - Frontend Admin Dashboard
+# SKIT AI Academic Scheduling System
 
 A state-of-the-art, high-performance Admin Dashboard UI/UX for the **Sri Krishna Institute of Technology (SKIT)** AI Academic Scheduling System built with React, Vite, Lucide Icons, Chart.js, and CSS design system.
 
@@ -25,16 +25,11 @@ A state-of-the-art, high-performance Admin Dashboard UI/UX for the **Sri Krishna
 ### Prerequisites
 
 - Node.js v18+ and npm
+- Python 3.10+ and MySQL 8+
 
 ### Installation & Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/vicky42v/AI-ASFA.git
-
-# Navigate to project directory
-cd AI-ASFA
-
 # Install dependencies
 npm install
 
@@ -42,7 +37,29 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser to view the application.
+Open [http://localhost:5173](http://localhost:5173) in your browser to view the application.
+
+### Backend and database
+
+1. Create `timetable_db` using the provided `timetable_db.sql` only when setting up a new local database. Do not import it into a database that already holds project data.
+2. Copy `.env.example` to `.env` and enter local MySQL credentials.
+   If the MySQL client is not on `PATH`, set `MYSQL_CLIENT_PATH` to its local executable.
+3. Run the additive migration once. It creates only authentication, notification, audit, backup, settings, and soft-status support tables; it does not modify or delete academic tables.
+
+```powershell
+mysql -u root -p timetable_db < backend/migrations/001_admin_support.sql
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r backend/requirements.txt
+.\.venv\Scripts\python -m backend.app
+```
+
+The API listens on `http://127.0.0.1:5000`. The browser communicates only with this API; MySQL credentials remain server-side. Create the first `Admin` account with the commented, password-hash-only example in the migration.
+
+### Scheduling, backup, and chat
+
+- `POST /api/timetable/generate` uses OR-Tools CP-SAT with actual subject hours, active assignments, timetable constraints, and existing faculty occupancy. A proposal is not saved until `POST /api/timetable/save` succeeds validation.
+- The backup endpoint uses local `mysqldump`; restore requires an Admin role, a checksum-valid recorded backup, and the exact `RESTORE <filename>` confirmation. Restore is never automatic.
+- `POST /api/chat` permits only controlled read-only database retrieval. Set `OLLAMA_MODEL` to use local Ollama; without it or when unavailable, the API returns a factual structured-data fallback.
 
 ### Building for Production
 

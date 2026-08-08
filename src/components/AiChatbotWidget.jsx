@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Sparkles, Send, Plus, Trash2, Bot, User, CheckCheck } from 'lucide-react';
+import { chatbotApi } from '../services/api';
 
 export default function AiChatbotWidget({ isFullPage = false }) {
   const [messages, setMessages] = useState([
@@ -31,6 +32,7 @@ The system will create an optimized timetable based on the selected preferences.
 
   const [input, setInput] = useState('');
   const [activeChat, setActiveChat] = useState('How to generate a timetable?');
+  const [isSending, setIsSending] = useState(false);
 
   const suggestedPrompts = [
     "How to add a new department?",
@@ -39,7 +41,7 @@ The system will create an optimized timetable based on the selected preferences.
     "View system usage summary"
   ];
 
-  const handleSend = (textToSend) => {
+  const handleSend = async (textToSend) => {
     const query = textToSend || input;
     if (!query.trim()) return;
 
@@ -53,28 +55,19 @@ The system will create an optimized timetable based on the selected preferences.
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
 
-    // Generate intelligent AI reply simulation
-    setTimeout(() => {
-      let replyText = "I have processed your request. You can manage this directly from the side navigation panel.";
-      
-      if (query.toLowerCase().includes("department")) {
-        replyText = "To add a department: Click on 'Departments' in the sidebar -> Click '+ Add Department' -> Fill in Department Name & Code -> Optionally assign HOD & Faculty -> Click Create Department.";
-      } else if (query.toLowerCase().includes("scheme") || query.toLowerCase().includes("upload")) {
-        replyText = "To upload a scheme PDF: Navigate to 'Schemes' -> Click '+ Upload New Scheme' -> Drag & Drop your syllabus PDF. Our AI automatically extracts subject code, credits, theory & lab hours for your review!";
-      } else if (query.toLowerCase().includes("summary") || query.toLowerCase().includes("usage")) {
-        replyText = "System Usage Summary:\n- Active Timetables: 24\n- Total Faculty Workload Utilization: 87%\n- Room Occupancy Rate: 85%\n- Zero scheduling conflicts detected in published timetables.";
-      } else if (query.toLowerCase().includes("faculty")) {
-        replyText = "To add faculty with AI Resume Extraction: Go to 'Faculty' -> Click 'Add Faculty (AI Powered)' -> Upload resume PDF -> Review AI extracted skills & confidence scores -> Save Faculty.";
-      }
-
+    setIsSending(true);
+    try {
+      const response = await chatbotApi.send(query);
       const aiMsg = {
         id: Date.now() + 1,
         sender: 'ai',
-        text: replyText,
+        text: response.answer,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages((prev) => [...prev, aiMsg]);
-    }, 600);
+    } catch (error) {
+      setMessages((prev) => [...prev, { id: Date.now() + 1, sender: 'ai', text: error.message, time: 'Just now' }]);
+    } finally { setIsSending(false); }
   };
 
   return (
@@ -222,6 +215,7 @@ The system will create an optimized timetable based on the selected preferences.
               className="btn-primary"
               style={{ width: '48px', height: '42px', padding: 0 }}
               onClick={() => handleSend()}
+              disabled={isSending}
             >
               <Send size={18} />
             </button>

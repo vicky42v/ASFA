@@ -16,6 +16,7 @@ coverage
 
 # Dependency directories
 node_modules/
+.venv/
 jspm_packages/
 
 # Optional npm cache
@@ -37,3 +38,12 @@ build/
 # System Files
 .DS_Store
 Thumbs.db
+.env
+backups/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.env

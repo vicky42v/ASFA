@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Search, Filter } from 'lucide-react';
-import { facultyData } from '../data/mockData';
+import { facultyApi } from '../services/api';
 
 export default function AddDepartmentModal({ isOpen, onClose, onSave }) {
   const [deptName, setDeptName] = useState('');
@@ -8,6 +8,8 @@ export default function AddDepartmentModal({ isOpen, onClose, onSave }) {
   const [desc, setDesc] = useState('');
   const [selectedHodId, setSelectedHodId] = useState(null);
   const [searchFaculty, setSearchFaculty] = useState('');
+  const [faculty, setFaculty] = useState([]);
+  useEffect(() => { if (isOpen) facultyApi.list().then(setFaculty).catch(() => setFaculty([])); }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -20,7 +22,7 @@ export default function AddDepartmentModal({ isOpen, onClose, onSave }) {
     onClose();
   };
 
-  const filteredFaculty = facultyData.filter(f => 
+  const filteredFaculty = faculty.filter(f => 
     f.name.toLowerCase().includes(searchFaculty.toLowerCase()) || 
     f.email.toLowerCase().includes(searchFaculty.toLowerCase())
   );
@@ -120,10 +122,10 @@ export default function AddDepartmentModal({ isOpen, onClose, onSave }) {
                       <td><input type="checkbox" /></td>
                       <td>
                         <div style={{ fontWeight: '700', color: 'var(--text-dark)' }}>{fac.name}</div>
-                        <div style={{ fontSize: '0.75rem', color: '#64748B' }}>{fac.email}</div>
+                        <div style={{ fontSize: '0.75rem', color: '#64748B' }}>{fac.status}</div>
                       </td>
                       <td>
-                        <span className="badge badge-purple">{fac.dept}</span>
+                        <span className="badge badge-purple">{fac.department}</span>
                       </td>
                       <td style={{ fontSize: '0.82rem' }}>{fac.designation}</td>
                       <td>

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Building2, 
   Users, 
@@ -15,8 +15,11 @@ import {
   BarChart3
 } from 'lucide-react';
 import AiChatbotWidget from './AiChatbotWidget';
+import { dashboardApi } from '../services/api';
 
 export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploadScheme }) {
+  const [summary, setSummary] = useState({ counts: {}, recent_timetables: [] });
+  useEffect(() => { dashboardApi.summary().then(setSummary).catch(() => {}); }, []);
   const handleQuickAction = (act) => {
     if (act === 'add-dept') onOpenAddDept();
     else if (act === 'upload-scheme') onOpenUploadScheme();
@@ -36,7 +39,7 @@ export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploa
           <div className="stat-icon-wrapper"><Building2 size={26} /></div>
           <div className="stat-content">
             <span className="stat-label">Departments</span>
-            <span className="stat-value">8</span>
+            <span className="stat-value">{summary.counts.departments ?? '—'}</span>
             <span className="stat-subtext">Total Departments</span>
           </div>
         </div>
@@ -45,7 +48,7 @@ export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploa
           <div className="stat-icon-wrapper"><Users size={26} /></div>
           <div className="stat-content">
             <span className="stat-label">Faculty</span>
-            <span className="stat-value">124</span>
+            <span className="stat-value">{summary.counts.faculty ?? '—'}</span>
             <span className="stat-subtext">Total Faculty</span>
           </div>
         </div>
@@ -54,7 +57,7 @@ export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploa
           <div className="stat-icon-wrapper"><BookOpen size={26} /></div>
           <div className="stat-content">
             <span className="stat-label">Subjects</span>
-            <span className="stat-value">128</span>
+            <span className="stat-value">{summary.counts.subjects ?? '—'}</span>
             <span className="stat-subtext">Active Subjects</span>
           </div>
         </div>
@@ -63,7 +66,7 @@ export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploa
           <div className="stat-icon-wrapper"><CalendarDays size={26} /></div>
           <div className="stat-content">
             <span className="stat-label">Timetables</span>
-            <span className="stat-value">24</span>
+            <span className="stat-value">{summary.counts.timetable_groups ?? '—'}</span>
             <span className="stat-subtext">Active Timetables</span>
           </div>
         </div>
@@ -115,16 +118,11 @@ export default function DashboardScreen({ onNavigate, onOpenAddDept, onOpenUploa
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {[
-              { title: 'Computer Science - 5th Sem', date: 'Generated on 02 May 2026', status: 'Published' },
-              { title: 'AI & ML - 3rd Sem', date: 'Generated on 01 May 2026', status: 'Published' },
-              { title: 'Electronics - 7th Sem', date: 'Generated on 30 Apr 2026', status: 'Published' },
-              { title: 'Information Science - 5th Sem', date: 'Generated on 28 Apr 2026', status: 'Published' }
-            ].map((tt, idx) => (
+            {summary.recent_timetables.map((tt, idx) => (
               <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#F8FAFC', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
                 <div>
-                  <div style={{ fontWeight: '700', fontSize: '0.88rem', color: 'var(--text-dark)' }}>{tt.title}</div>
-                  <div style={{ fontSize: '0.75rem', color: '#64748B' }}>{tt.date}</div>
+                  <div style={{ fontWeight: '700', fontSize: '0.88rem', color: 'var(--text-dark)' }}>{tt.department_name} - {tt.semester_no} Sem</div>
+                  <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Generated {tt.created_at ? new Date(tt.created_at).toLocaleString() : '—'}</div>
                 </div>
                 <span className="badge badge-published">{tt.status}</span>
               </div>

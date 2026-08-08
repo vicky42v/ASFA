@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import TopHeader from './components/TopHeader';
 import LoginScreen from './components/LoginScreen';
@@ -20,6 +20,7 @@ import BackupRestoreScreen from './components/BackupRestoreScreen';
 
 import AddDepartmentModal from './components/AddDepartmentModal';
 import UploadSchemeModal from './components/UploadSchemeModal';
+import { authApi, departmentApi } from './services/api';
 
 const pageMetadata = {
   'dashboard': { title: 'Welcome, Admin', subtitle: 'Manage the entire academic scheduling system.', bc: [{ label: 'Dashboard' }] },
@@ -40,13 +41,18 @@ const pageMetadata = {
 };
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   
   // Modal states
   const [isAddDeptOpen, setIsAddDeptOpen] = useState(false);
   const [isUploadSchemeOpen, setIsUploadSchemeOpen] = useState(false);
 
+  useEffect(() => { authApi.me().then(() => setIsAuthenticated(true)).catch(() => setIsAuthenticated(false)).finally(() => setCheckingSession(false)); }, []);
+  const logout = async () => { try { await authApi.logout(); } finally { setIsAuthenticated(false); } };
+
+  if (checkingSession) return null;
   if (!isAuthenticated) {
     return <LoginScreen onLogin={() => setIsAuthenticated(true)} />;
   }
@@ -100,7 +106,7 @@ export default function App() {
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
-        onLogout={() => setIsAuthenticated(false)} 
+        onLogout={logout} 
       />
 
       <div className="main-wrapper">
@@ -109,7 +115,7 @@ export default function App() {
           subtitle={meta.subtitle}
           breadcrumbs={meta.bc}
           onNavigate={setActiveTab}
-          onLogout={() => setIsAuthenticated(false)}
+          onLogout={logout}
         />
 
         <main className="page-content">
@@ -121,10 +127,7 @@ export default function App() {
       <AddDepartmentModal 
         isOpen={isAddDeptOpen}
         onClose={() => setIsAddDeptOpen(false)}
-        onSave={(data) => {
-          alert(`Department "${data.name}" successfully created!`);
-          setIsAddDeptOpen(false);
-        }}
+        onSave={async (data) => { try { await departmentApi.create({ name: data.name, code: data.code }); setIsAddDeptOpen(false); } catch (error) { alert(error.message); } }}
       />
 
       <UploadSchemeModal 

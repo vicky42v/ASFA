@@ -1,22 +1,34 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, Plus, FileSpreadsheet, Search, Filter, Eye, Edit3, Trash2 } from 'lucide-react';
-import { subjectsData } from '../data/mockData';
+import { subjectApi } from '../services/api';
 import { Doughnut } from 'react-chartjs-2';
 
 export default function SubjectsScreen() {
-  const [subjects, setSubjects] = useState(subjectsData);
+  const [subjects, setSubjects] = useState([]);
   const [search, setSearch] = useState('');
+  const loadSubjects = () => { subjectApi.list().then(setSubjects).catch(() => setSubjects([])); };
+  useEffect(() => { loadSubjects(); }, []);
+
+  const handleDeactivate = async (id, name) => {
+    if (!window.confirm(`Are you sure you want to deactivate subject ${name}?`)) return;
+    try {
+      await subjectApi.deactivate(id);
+      loadSubjects();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
   const filtered = subjects.filter(s => 
-    s.code.toLowerCase().includes(search.toLowerCase()) || 
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.dept.toLowerCase().includes(search.toLowerCase())
+    (s.code || '').toLowerCase().includes(search.toLowerCase()) || 
+    (s.name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (s.department || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const donutData = {
-    labels: ['Theory (69.5%)', 'Lab (25.0%)', 'Tutorial/Activity (5.5%)'],
+    labels: ['Theory', 'Lab'],
     datasets: [{
-      data: [89, 32, 7],
+      data: [subjects.filter(s => s.type === 'Theory').length, subjects.filter(s => s.type === 'Lab').length],
       backgroundColor: ['#005E38', '#3B82F6', '#F59E0B'],
       borderWidth: 0
     }]
@@ -31,7 +43,7 @@ export default function SubjectsScreen() {
           <div className="stat-icon-wrapper"><BookOpen size={24} /></div>
           <div>
             <div className="stat-label">Total Subjects</div>
-            <div className="stat-value">128</div>
+            <div className="stat-value">{subjects.length}</div>
             <div className="stat-subtext">Across all departments</div>
           </div>
         </div>
@@ -40,7 +52,7 @@ export default function SubjectsScreen() {
           <div className="stat-icon-wrapper"><BookOpen size={24} /></div>
           <div>
             <div className="stat-label">Theory Subjects</div>
-            <div className="stat-value">89</div>
+            <div className="stat-value">{subjects.filter(s => s.type === 'Theory').length}</div>
             <div className="stat-subtext">69.5% of total</div>
           </div>
         </div>
@@ -49,7 +61,7 @@ export default function SubjectsScreen() {
           <div className="stat-icon-wrapper" style={{ background: '#F3E8FF', color: '#8B5CF6' }}><BookOpen size={24} /></div>
           <div>
             <div className="stat-label">Lab Subjects</div>
-            <div className="stat-value">32</div>
+            <div className="stat-value">{subjects.filter(s => s.type === 'Lab').length}</div>
             <div className="stat-subtext">25.0% of total</div>
           </div>
         </div>
@@ -105,20 +117,20 @@ export default function SubjectsScreen() {
                   <tr key={s.id}>
                     <td style={{ fontWeight: '800', color: 'var(--primary)' }}>{s.code}</td>
                     <td style={{ fontWeight: '700' }}>{s.name}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{s.dept}</td>
-                    <td>{s.sem}</td>
+                    <td style={{ fontSize: '0.82rem' }}>{s.department}</td>
+                    <td>{s.semester_no}</td>
                     <td>
                       <span className={s.type === 'Lab' ? 'badge badge-info' : 'badge badge-active'}>
                         {s.type}
                       </span>
                     </td>
-                    <td>{s.credit}</td>
-                    <td><span className="badge badge-active">{s.status}</span></td>
+                    <td>{s.credits}</td>
+                    <td><span className={s.status === 'Inactive' ? "badge badge-gray" : "badge badge-active"}>{s.status || 'Active'}</span></td>
                     <td>
                       <div className="table-actions">
-                        <button className="action-icon-btn"><Eye size={16} /></button>
-                        <button className="action-icon-btn"><Edit3 size={16} /></button>
-                        <button className="action-icon-btn delete"><Trash2 size={16} /></button>
+                        <button className="action-icon-btn" title="View Details"><Eye size={16} /></button>
+                        <button className="action-icon-btn" title="Edit Subject"><Edit3 size={16} /></button>
+                        <button className="action-icon-btn delete" title="Deactivate Subject" onClick={() => handleDeactivate(s.id, s.name)}><Trash2 size={16} /></button>
                       </div>
                     </td>
                   </tr>

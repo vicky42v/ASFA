@@ -1,42 +1,45 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Users, Plus, Search, Filter, Eye, Edit3, Trash2, Sparkles, UserPlus } from 'lucide-react';
-import { facultyData } from '../data/mockData';
+import { departmentApi, facultyApi } from '../services/api';
 import AddFacultyAiScreen from './AddFacultyAiScreen';
 import FacultyProfilePreview from './FacultyProfilePreview';
 
 export default function FacultyScreen() {
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'add-ai' | 'preview'
-  const [facultyList, setFacultyList] = useState(facultyData);
+  const [facultyList, setFacultyList] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [selectedFaculty, setSelectedFaculty] = useState(null);
   const [search, setSearch] = useState('');
+  const loadFaculty = () => facultyApi.list().then(setFacultyList).catch(() => setFacultyList([]));
+  useEffect(() => { loadFaculty(); departmentApi.list().then(setDepartments).catch(() => {}); }, []);
 
   const filtered = facultyList.filter(f => 
     f.name.toLowerCase().includes(search.toLowerCase()) || 
-    f.email.toLowerCase().includes(search.toLowerCase()) ||
-    f.dept.toLowerCase().includes(search.toLowerCase())
+    (f.email || '').toLowerCase().includes(search.toLowerCase()) ||
+    (f.department || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const handleSaveFaculty = (newFac) => {
-    const created = {
-      id: facultyList.length + 1,
-      empId: newFac.empId || `SKIT${1030 + facultyList.length}`,
-      name: newFac.name,
-      email: newFac.email,
-      dept: newFac.department,
-      designation: newFac.designation,
-      role: newFac.role,
-      status: 'Active',
-      phone: newFac.phone || '9876543210',
-      workload: '18/24 hrs',
-      confidence: '98%'
-    };
-    setFacultyList([created, ...facultyList]);
-    setSelectedFaculty(created);
-    setViewMode('preview');
+  const handleSaveFaculty = async (newFac) => {
+    const department = departments.find((item) => item.name === newFac.department);
+    if (!department) return alert('Select a department that exists in the database.');
+    try {
+      await facultyApi.create({ name: newFac.name, department_id: department.id, designation: newFac.designation });
+      await loadFaculty(); setViewMode('list');
+    } catch (error) { alert(error.message); }
+  };
+
+  const handleDeactivate = async (id, name) => {
+    if (!window.confirm(`Are you sure you want to deactivate faculty member ${name}?`)) return;
+    try {
+      await facultyApi.deactivate(id);
+      loadFaculty();
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
   if (viewMode === 'add-ai') {
-    return <AddFacultyAiScreen onSaveFaculty={handleSaveFaculty} onCancel={() => setViewMode('list')} />;
+    return <AddFacultyAiScreen departments={departments} onSaveFaculty={handleSaveFaculty} onCancel={() => setViewMode('list')} />;
   }
 
   if (viewMode === 'preview') {
@@ -75,9 +78,7 @@ export default function FacultyScreen() {
           </div>
           <select className="form-select">
             <option>All Departments</option>
-            <option>Computer Science & Engineering</option>
-            <option>AI & Machine Learning</option>
-            <option>Electronics & Communication</option>
+            {departments.map(d => <option key={d.id}>{d.name}</option>)}
           </select>
           <select className="form-select">
             <option>All Designations</option>
@@ -104,7 +105,7 @@ export default function FacultyScreen() {
             <tbody>
               {filtered.map((fac) => (
                 <tr key={fac.id}>
-                  <td style={{ fontWeight: '800', color: '#64748B' }}>{fac.empId}</td>
+                  <td style={{ fontWeight: '800', color: '#64748B' }}>{fac.id}</td>
                   <td>
                     <div 
                       style={{ fontWeight: '700', color: 'var(--primary)', cursor: 'pointer' }}
@@ -112,13 +113,13 @@ export default function FacultyScreen() {
                     >
                       {fac.name}
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>{fac.email}</div>
+                    <div style={{ fontSize: '0.75rem', color: '#64748B' }}>{fac.status}</div>
                   </td>
-                  <td style={{ fontSize: '0.82rem' }}>{fac.dept}</td>
+                  <td style={{ fontSize: '0.82rem' }}>{fac.department}</td>
                   <td style={{ fontSize: '0.82rem' }}>{fac.designation}</td>
-                  <td><span className="badge badge-purple">{fac.role}</span></td>
-                  <td style={{ fontSize: '0.82rem', fontWeight: '700' }}>{fac.workload}</td>
-                  <td><span className="badge badge-active">{fac.status}</span></td>
+                  <td><span className="badge badge-purple">Faculty</span></td>
+                  <td style={{ fontSize: '0.82rem', fontWeight: '700' }}>{fac.workload}/{fac.max_workload || '—'} hrs</td>
+                  <td><span className={fac.status === 'Inactive' ? "badge badge-gray" : "badge badge-active"}>{fac.status}</span></td>
                   <td>
                     <div className="table-actions">
                       <button 
@@ -128,8 +129,8 @@ export default function FacultyScreen() {
                       >
                         <Eye size={16} />
                       </button>
-                      <button className="action-icon-btn"><Edit3 size={16} /></button>
-                      <button className="action-icon-btn delete"><Trash2 size={16} /></button>
+                      <button className="action-icon-btn" title="Edit Faculty"><Edit3 size={16} /></button>
+                      <button className="action-icon-btn delete" title="Deactivate Faculty" onClick={() => handleDeactivate(fac.id, fac.name)}><Trash2 size={16} /></button>
                     </div>
                   </td>
                 </tr>

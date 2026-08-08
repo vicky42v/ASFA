@@ -1,12 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { History, Shield, CheckCircle2 } from 'lucide-react';
+import { auditApi } from '../services/api';
 
 export default function AuditLogsScreen() {
-  const logs = [
-    { time: '20/07/2026 10:30:15 AM', user: 'Admin User', action: 'Created Department', module: 'Departments', ip: '192.168.1.10', status: 'Success' },
-    { time: '20/07/2026 09:45:02 AM', user: 'Dr. Mahesh B', action: 'Generated Timetable', module: 'Timetables', ip: '192.168.1.24', status: 'Success' },
-    { time: '19/07/2026 04:12:44 PM', user: 'Prof. Ramesh K', action: 'Uploaded Scheme PDF', module: 'Schemes', ip: '192.168.1.55', status: 'Success' }
-  ];
+  const [logs, setLogs] = useState([]);
+  useEffect(() => { auditApi.list().then(setLogs).catch(() => setLogs([])); }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -27,14 +25,14 @@ export default function AuditLogsScreen() {
               </tr>
             </thead>
             <tbody>
-              {logs.map((l, i) => (
-                <tr key={i}>
-                  <td style={{ fontSize: '0.78rem' }}>{l.time}</td>
-                  <td style={{ fontWeight: '700' }}>{l.user}</td>
+              {logs.map((l) => (
+                <tr key={l.audit_id}>
+                  <td style={{ fontSize: '0.78rem' }}>{l.created_at ? new Date(l.created_at).toLocaleString() : ''}</td>
+                  <td style={{ fontWeight: '700' }}>{l.actor_name}</td>
                   <td style={{ fontWeight: '700', color: 'var(--primary)' }}>{l.action}</td>
                   <td>{l.module}</td>
-                  <td style={{ fontSize: '0.78rem', color: '#64748B' }}>{l.ip}</td>
-                  <td><span className="badge badge-active">{l.status}</span></td>
+                  <td style={{ fontSize: '0.78rem', color: '#64748B' }}>{l.ip_address}</td>
+                  <td><span className="badge badge-active">{l.outcome}</span></td>
                 </tr>
               ))}
             </tbody>

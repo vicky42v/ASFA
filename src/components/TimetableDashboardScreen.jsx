@@ -1,20 +1,30 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Calendar, Download, Sparkles, Wand2, Trash2, Save, X, CheckCircle2, FileSpreadsheet, RefreshCw, ChevronRight } from 'lucide-react';
-import { timetableMatrixData } from '../data/mockData';
+import { api, timetableApi } from '../services/api';
 
 export default function TimetableDashboardScreen() {
   const [activeView, setActiveView] = useState('grid');
   const [showAiDrawer, setShowAiDrawer] = useState(true);
   const [selectedSlot, setSelectedSlot] = useState({ day: 'Tuesday', period: 'Period V (1:45 - 2:40)', subject: 'Project (Team Based)' });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [schemes, setSchemes] = useState([]);
+  const [semesters, setSemesters] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [context, setContext] = useState({ department_id: '', scheme_id: '', semester_id: '', academic_year: '2026-27', semester_type: 'Odd' });
+  const [message, setMessage] = useState('');
+  useEffect(() => { Promise.all([api.get('/departments'), api.get('/schemes'), api.get('/semesters')]).then(([d,s,se]) => { setDepartments(d); setSchemes(s); setSemesters(se); setContext((c) => ({ ...c, department_id: d[0]?.id || '', scheme_id: s[0]?.id || '', semester_id: se[0]?.id || '', semester_type: se[0]?.semester_type || 'Odd' })); }).catch(() => {}); }, []);
+  useEffect(() => { if (context.department_id && context.scheme_id && context.semester_id) timetableApi.list(context).then(setEntries).catch(() => setEntries([])); }, [context]);
+  const gridRows = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day) => ({ day, slots: Array.from({ length: 7 }, (_, index) => { const item = entries.find((entry) => entry.day === day && Number(entry.period) === index + 1); return item ? { code: item.subject_code, faculty: item.faculty_name } : { code: '—', faculty: '' }; }) }));
 
-  const handleAutoGenerate = () => {
+  const handleAutoGenerate = async () => {
     setIsGenerating(true);
-    setTimeout(() => {
-      setIsGenerating(false);
-      alert("AI Timetable Generation Complete! 0 conflicts detected. All constraints satisfied.");
-    }, 1500);
+    setMessage('');
+    try { const result = await timetableApi.generate(context); setEntries(result.timetable || []); setMessage(result.validation?.valid ? `Generated ${result.summary?.scheduled_sessions || 0} sessions. Click Save Timetable to persist.` : (result.validation?.errors || ['Generation failed.']).join(' ')); }
+    catch (error) { setMessage(error.message); }
+    finally { setIsGenerating(false); }
   };
+  const saveTimetable = async () => { try { const result = await timetableApi.save({ ...context, entries }); setMessage(`${result.saved_entries} sessions saved.`); } catch (error) { setMessage(error.message); } };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -25,38 +35,21 @@ export default function TimetableDashboardScreen() {
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', flex: 1 }}>
             <div className="form-group" style={{ margin: 0, minWidth: '180px' }}>
               <label className="form-label">Department</label>
-              <select className="form-select">
-                <option>Computer Science & Engineering</option>
-                <option>AI & Machine Learning</option>
-                <option>Electronics & Communication</option>
+              <select className="form-select" value={context.department_id} onChange={(e) => setContext({ ...context, department_id: e.target.value })}>
+                {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
               </select>
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Semester</label>
-              <select className="form-select">
-                <option>VII Semester</option>
-                <option>V Semester</option>
-                <option>III Semester</option>
-                <option>I Semester</option>
-              </select>
-            </div>
-
-            <div className="form-group" style={{ margin: 0 }}>
-              <label className="form-label">Division</label>
-              <select className="form-select">
-                <option>A</option>
-                <option>B</option>
-                <option>C</option>
+              <select className="form-select" value={context.semester_id} onChange={(e) => { const semester = semesters.find((item) => String(item.id) === e.target.value); setContext({ ...context, semester_id: e.target.value, semester_type: semester?.semester_type || context.semester_type }); }}>
+                {semesters.map((semester) => <option key={semester.id} value={semester.id}>{semester.semester_no} Semester</option>)}
               </select>
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
               <label className="form-label">Academic Year</label>
-              <select className="form-select">
-                <option>2024 - 2025</option>
-                <option>2025 - 2026</option>
-              </select>
+              <input className="form-input" value={context.academic_year} onChange={(e) => setContext({ ...context, academic_year: e.target.value })} />
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
@@ -74,6 +67,7 @@ export default function TimetableDashboardScreen() {
             </button>
           </div>
         </div>
+        {message && <div style={{ marginTop: '10px', fontSize: '0.8rem', color: 'var(--primary)', fontWeight: '700' }}>{message}</div>}
       </div>
 
       {/* Grid Sub-bar & Main Content Layout */}
@@ -115,7 +109,7 @@ export default function TimetableDashboardScreen() {
               <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '0.78rem' }}>
                 <Trash2 size={14} /> Clear All
               </button>
-              <button className="btn-primary" style={{ padding: '6px 14px', fontSize: '0.78rem' }}>
+              <button className="btn-primary" onClick={saveTimetable} style={{ padding: '6px 14px', fontSize: '0.78rem' }}>
                 <Save size={14} /> Save Timetable
               </button>
               {!showAiDrawer && (
@@ -145,19 +139,12 @@ export default function TimetableDashboardScreen() {
 
             {/* Grid Rows */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '980px' }}>
-              {timetableMatrixData.map((row, rIdx) => (
+              {gridRows.map((row, rIdx) => (
                 <div key={rIdx} style={{ display: 'grid', gridTemplateColumns: '100px repeat(9, 1fr)', gap: '6px' }}>
                   <div className="tt-day-cell">{row.day}</div>
                   
                   {row.slots.map((slot, sIdx) => {
-                    if (slot.break) {
-                      return (
-                        <div key={sIdx} className="tt-slot-card break" style={{ fontSize: '0.68rem', fontWeight: '800' }}>
-                          ☕ {slot.label}
-                        </div>
-                      );
-                    }
-                    const isSelected = slot.selected;
+                    const isSelected = selectedSlot.subject === slot.code;
                     return (
                       <div 
                         key={sIdx} 
@@ -170,7 +157,6 @@ export default function TimetableDashboardScreen() {
                       >
                         <div className="tt-subject-code">{slot.code}</div>
                         <div className="tt-faculty-name">{slot.faculty}</div>
-                        <div className="tt-room-name">{slot.room}</div>
                       </div>
                     );
                   })}

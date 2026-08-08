@@ -1,16 +1,19 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Download, FileSpreadsheet, Printer, ArrowUpRight, ArrowDownRight, Sparkles, CheckCircle2, Eye, Edit3 } from 'lucide-react';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from 'chart.js';
 import { Doughnut, Bar } from 'react-chartjs-2';
+import { dashboardApi } from '../services/api';
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
 
 export default function ReportsScreen() {
+  const [report, setReport] = useState({ subject_types: [], faculty_workload: [], departments: [], assignment_status: [] });
+  useEffect(() => { dashboardApi.reports().then(setReport).catch(() => {}); }, []);
   const donutData = {
-    labels: ['Theory (54%)', 'Lab (25%)', 'Tutorial/Activity (12%)', 'Project (9%)'],
+    labels: report.subject_types.map((item) => item.type),
     datasets: [
       {
-        data: [54, 25, 12, 9],
+        data: report.subject_types.map((item) => item.count),
         backgroundColor: ['#005E38', '#3B82F6', '#F59E0B', '#EF4444'],
         borderWidth: 0,
       },
@@ -18,11 +21,11 @@ export default function ReportsScreen() {
   };
 
   const barData = {
-    labels: ['Dr. M. L. Patil', 'Mr. V. Sri Karan', 'Mr. Asghar Pasha', 'Mrs. Nanda M B', 'Others'],
+    labels: report.faculty_workload.map((item) => item.faculty_name),
     datasets: [
       {
         label: 'Hours / Week',
-        data: [28, 26, 24, 22, 20],
+        data: report.faculty_workload.map((item) => item.hours),
         backgroundColor: '#005E38',
         borderRadius: 6,
       },
@@ -38,7 +41,7 @@ export default function ReportsScreen() {
           <div className="stat-icon-wrapper"><CheckCircle2 size={24} /></div>
           <div>
             <div className="stat-label">Timetables Generated</div>
-            <div className="stat-value">36</div>
+            <div className="stat-value">{report.departments.reduce((sum, item) => sum + Number(item.timetables || 0), 0)}</div>
             <div style={{ fontSize: '0.75rem', color: '#15803D', fontWeight: '700', marginTop: '2px' }}>↑ 12% from last month</div>
           </div>
         </div>
@@ -47,7 +50,7 @@ export default function ReportsScreen() {
           <div className="stat-icon-wrapper"><CheckCircle2 size={24} /></div>
           <div>
             <div className="stat-label">Total Faculty</div>
-            <div className="stat-value">128</div>
+            <div className="stat-value">{report.departments.reduce((sum, item) => sum + Number(item.faculty || 0), 0)}</div>
             <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: '600', marginTop: '2px' }}>98% utilization</div>
           </div>
         </div>
@@ -56,7 +59,7 @@ export default function ReportsScreen() {
           <div className="stat-icon-wrapper"><CheckCircle2 size={24} /></div>
           <div>
             <div className="stat-label">Total Classes / Week</div>
-            <div className="stat-value">1,440</div>
+            <div className="stat-value">{report.faculty_workload.reduce((sum, item) => sum + Number(item.hours || 0), 0)}</div>
             <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: '600', marginTop: '2px' }}>Across all departments</div>
           </div>
         </div>
@@ -65,7 +68,7 @@ export default function ReportsScreen() {
           <div className="stat-icon-wrapper" style={{ background: '#FEF3C7', color: '#D97706' }}><CheckCircle2 size={24} /></div>
           <div>
             <div className="stat-label">Clashes Detected</div>
-            <div className="stat-value">2</div>
+            <div className="stat-value">{report.assignment_status.length}</div>
             <div style={{ fontSize: '0.75rem', color: '#15803D', fontWeight: '700', marginTop: '2px' }}>↓ 80% from last generation</div>
           </div>
         </div>
@@ -84,7 +87,7 @@ export default function ReportsScreen() {
               <div style={{ width: '160px', height: '160px', margin: '0 auto' }}>
                 <Doughnut data={donutData} options={{ plugins: { legend: { display: false } } }} />
               </div>
-              <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '12px' }}>36 Total Subjects</div>
+              <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '12px' }}>{report.subject_types.reduce((sum, item) => sum + Number(item.count || 0), 0)} Total Subjects</div>
             </div>
 
             <div className="skit-card" style={{ padding: '16px' }}>
@@ -97,9 +100,9 @@ export default function ReportsScreen() {
             <div className="skit-card" style={{ padding: '16px', textAlign: 'center', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <div style={{ fontWeight: '800', fontSize: '0.9rem', marginBottom: '12px' }}>Room Utilization</div>
               <div style={{ width: '100px', height: '100px', borderRadius: '50%', border: '8px solid var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto', fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>
-                87%
+                N/A
               </div>
-              <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '12px' }}>Utilized Capacity</div>
+              <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '12px' }}>No room data configured</div>
             </div>
           </div>
 
@@ -125,26 +128,19 @@ export default function ReportsScreen() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { dept: 'Computer Science & Engineering', s: 8, sub: 36, f: 28, c: 240, u: 92 },
-                    { dept: 'Electronics & Communication', s: 8, sub: 34, f: 26, c: 230, u: 88 },
-                    { dept: 'Mechanical Engineering', s: 8, sub: 32, f: 24, c: 220, u: 85 },
-                    { dept: 'Civil Engineering', s: 8, sub: 30, f: 22, c: 210, u: 83 },
-                    { dept: 'Electrical & Electronics', s: 8, sub: 33, f: 25, c: 225, u: 86 },
-                    { dept: 'AI & Machine Learning', s: 8, sub: 28, f: 20, c: 200, u: 81 }
-                  ].map((row, i) => (
-                    <tr key={i}>
-                      <td style={{ fontWeight: '700' }}>{row.dept}</td>
-                      <td>{row.s}</td>
-                      <td>{row.sub}</td>
-                      <td>{row.f}</td>
-                      <td>{row.c}</td>
+                  {report.departments.map((row) => (
+                    <tr key={row.department_id}>
+                      <td style={{ fontWeight: '700' }}>{row.department_name}</td>
+                      <td>—</td>
+                      <td>{row.subjects}</td>
+                      <td>{row.faculty}</td>
+                      <td>{row.timetables}</td>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <div style={{ flex: 1, height: '6px', background: '#E2E8F0', borderRadius: '99px', overflow: 'hidden' }}>
-                            <div style={{ width: `${row.u}%`, height: '100%', background: 'var(--primary)' }} />
+                            <div style={{ width: '0%', height: '100%', background: 'var(--primary)' }} />
                           </div>
-                          <span style={{ fontSize: '0.75rem', fontWeight: '700' }}>{row.u}%</span>
+                          <span style={{ fontSize: '0.75rem', fontWeight: '700' }}>—</span>
                         </div>
                       </td>
                       <td><span className="badge badge-active">Healthy</span></td>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { UploadCloud, CheckCircle2, Trash2, Sparkles, User, FileText, ArrowRight, AlertTriangle } from 'lucide-react';
 
-export default function AddFacultyAiScreen({ onSaveFaculty, onCancel }) {
+export default function AddFacultyAiScreen({ onSaveFaculty, onCancel, departments = [] }) {
   const [uploadedFiles, setUploadedFiles] = useState([
     { name: 'Dr.Kavitha_Resume.pdf', size: 'PDF • 1.2 MB' },
     { name: 'Appointment_Order.pdf', size: 'PDF • 0.8 MB' },
@@ -17,7 +17,7 @@ export default function AddFacultyAiScreen({ onSaveFaculty, onCancel }) {
     experience: '12 Years',
     designation: 'Associate Professor',
     specialization: 'Artificial Intelligence',
-    department: 'Artificial Intelligence & Machine Learning',
+    department: departments[0]?.name || '',
     role: 'Faculty',
     employmentType: 'Regular',
     status: 'Active',
@@ -167,9 +167,7 @@ export default function AddFacultyAiScreen({ onSaveFaculty, onCancel }) {
               value={form.department}
               onChange={(e) => setForm({ ...form, department: e.target.value })}
             >
-              <option>Artificial Intelligence & Machine Learning</option>
-              <option>Computer Science and Engineering</option>
-              <option>Electronics and Communication Engineering</option>
+              {departments.map((department) => <option key={department.id}>{department.name}</option>)}
             </select>
           </div>
 
