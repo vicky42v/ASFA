@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for instrumented code leveraged by Istanbul
+coverage
+
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Optional npm cache
+.npm
+
+# Output of 'npm run build'
+dist/
+build/
+
+# Serverless directories
+.serverless
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# System Files
+.DS_Store
+Thumbs.db
