@@ -38,36 +38,64 @@ const navItems = [
 ];
 
 export default function Sidebar({ activeTab, setActiveTab, onLogout }) {
+  const handleNavigation = (itemId) => {
+    // Don't update the state if the user clicks
+    // the page that is already active.
+    if (activeTab === itemId) {
+      return;
+    }
+
+    setActiveTab(itemId);
+  };
+
   return (
     <aside className="sidebar">
+
+      {/* Sidebar Logo */}
       <div className="sidebar-logo">
         <SkitLogo size={42} />
+
         <div>
-          <div className="logo-text-title">SKIT</div>
-          <div className="logo-text-sub">AI Academic<br/>Scheduling System</div>
+          <div className="logo-text-title">
+            SKIT
+          </div>
+
+          <div className="logo-text-sub">
+            AI Academic<br />
+            Scheduling System
+          </div>
         </div>
       </div>
 
+      {/* Navigation */}
       <nav className="sidebar-nav">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
+
           return (
             <button
+              type="button"
               key={item.id}
               className={`nav-item ${isActive ? 'active' : ''}`}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => handleNavigation(item.id)}
             >
               <Icon className="nav-icon" />
-              <span style={{ flex: 1 }}>{item.label}</span>
+
+              <span style={{ flex: 1 }}>
+                {item.label}
+              </span>
+
               {item.badge && (
-                <span 
-                  style={{ 
-                    fontSize: '0.65rem', 
-                    padding: '2px 6px', 
-                    borderRadius: '99px', 
-                    background: isActive ? '#FFFFFF' : 'var(--primary-light)',
-                    color: isActive ? 'var(--primary)' : 'var(--primary)',
+                <span
+                  style={{
+                    fontSize: '0.65rem',
+                    padding: '2px 6px',
+                    borderRadius: '99px',
+                    background: isActive
+                      ? '#FFFFFF'
+                      : 'var(--primary-light)',
+                    color: 'var(--primary)',
                     fontWeight: '800'
                   }}
                 >
@@ -79,16 +107,25 @@ export default function Sidebar({ activeTab, setActiveTab, onLogout }) {
         })}
       </nav>
 
+      {/* Logout */}
       <div className="sidebar-footer">
-        <button 
-          className="nav-item" 
+        <button
+          type="button"
+          className="nav-item"
           onClick={onLogout}
           style={{ color: '#EF4444' }}
         >
-          <LogOut className="nav-icon" style={{ color: '#EF4444' }} />
-          <span>Logout</span>
+          <LogOut
+            className="nav-icon"
+            style={{ color: '#EF4444' }}
+          />
+
+          <span>
+            Logout
+          </span>
         </button>
       </div>
+
     </aside>
   );
 }
