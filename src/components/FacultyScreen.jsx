@@ -32,12 +32,65 @@ export default function FacultyScreen() {
   // ---------------------------------------------------------
   const [search, setSearch] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState('');
-  const [selectedDesignation, setSelectedDesignation] = useState('');
+  const [selectedRole, setSelectedRole] = useState('');
 
   // ---------------------------------------------------------
   // UI STATE
   // ---------------------------------------------------------
   const [loading, setLoading] = useState(true);
+
+  // ---------------------------------------------------------
+  // ROLE NORMALIZATION
+  // ---------------------------------------------------------
+  // Database currently contains some older/inconsistent role names.
+  // This converts them into the standard roles used by the UI.
+  const normalizeRole = (designation) => {
+    const role = (designation || '').toString().trim();
+
+    if (!role) {
+      return '';
+    }
+
+    // Professor + HOD variations
+    if (
+      role.toLowerCase() === 'professor & hod' ||
+      role.toLowerCase() ===
+        'professor & head of the department' ||
+      role.toLowerCase() === 'hod'
+    ) {
+      return 'Professor & HOD';
+    }
+
+    // Associate Professor + R&D variations
+    if (
+      role.toLowerCase() ===
+        'associate professor, head r & d' ||
+      role.toLowerCase() ===
+        'associate professor, head r&d' ||
+      role.toLowerCase() ===
+        'associate professor & head r&d' ||
+      role.toLowerCase() ===
+        'associate professor & head r & d'
+    ) {
+      return 'Associate Professor & Head R&D';
+    }
+
+    // Standard roles
+    if (role.toLowerCase() === 'professor') {
+      return 'Professor';
+    }
+
+    if (role.toLowerCase() === 'associate professor') {
+      return 'Associate Professor';
+    }
+
+    if (role.toLowerCase() === 'assistant professor') {
+      return 'Assistant Professor';
+    }
+
+    // Keep unknown values visible instead of deleting data.
+    return role;
+  };
 
   // ---------------------------------------------------------
   // LOAD FACULTY
@@ -86,13 +139,30 @@ export default function FacultyScreen() {
     const searchText = search.toLowerCase().trim();
 
     return facultyList.filter((faculty) => {
+      const normalizedRole = normalizeRole(
+        faculty.designation
+      );
+
+      // Search
       const matchesSearch =
         !searchText ||
-        (faculty.name || '').toLowerCase().includes(searchText) ||
-        (faculty.email || '').toLowerCase().includes(searchText) ||
-        (faculty.department || '').toLowerCase().includes(searchText);
+        (faculty.name || '')
+          .toLowerCase()
+          .includes(searchText) ||
+        (faculty.email || '')
+          .toLowerCase()
+          .includes(searchText) ||
+        (faculty.department || '')
+          .toLowerCase()
+          .includes(searchText) ||
+        normalizedRole
+          .toLowerCase()
+          .includes(searchText);
 
-      const facultyDepartment = (faculty.department || '')
+      // Department
+      const facultyDepartment = (
+        faculty.department || ''
+      )
         .toString()
         .trim()
         .toLowerCase();
@@ -106,31 +176,32 @@ export default function FacultyScreen() {
         !selectedDepartment ||
         facultyDepartment === selectedDept;
 
-      const facultyDesignation = (faculty.designation || '')
+      // Role
+      const facultyRole = normalizedRole
         .toString()
         .trim()
         .toLowerCase();
 
-      const selectedDesig = selectedDesignation
+      const selectedRoleValue = selectedRole
         .toString()
         .trim()
         .toLowerCase();
 
-      const matchesDesignation =
-        !selectedDesignation ||
-        facultyDesignation === selectedDesig;
+      const matchesRole =
+        !selectedRole ||
+        facultyRole === selectedRoleValue;
 
       return (
         matchesSearch &&
         matchesDepartment &&
-        matchesDesignation
+        matchesRole
       );
     });
   }, [
     facultyList,
     search,
     selectedDepartment,
-    selectedDesignation,
+    selectedRole,
   ]);
 
   // ---------------------------------------------------------
@@ -142,7 +213,9 @@ export default function FacultyScreen() {
     );
 
     if (!department) {
-      alert('Select a department that exists in the database.');
+      alert(
+        'Select a department that exists in the database.'
+      );
       return;
     }
 
@@ -150,34 +223,58 @@ export default function FacultyScreen() {
       await facultyApi.create({
         name: newFac.name,
         department_id: department.id,
-        designation: newFac.designation,
+        designation: normalizeRole(
+          newFac.designation
+        ),
       });
 
       await loadFaculty();
 
       setViewMode('list');
     } catch (error) {
-      console.error('Failed to save faculty:', error);
-      alert(error.message || 'Failed to save faculty.');
+      console.error(
+        'Failed to save faculty:',
+        error
+      );
+
+      alert(
+        error.message ||
+          'Failed to save faculty.'
+      );
     }
   };
 
   // ---------------------------------------------------------
   // SAVE MANUAL EDIT
   // ---------------------------------------------------------
-  const handleUpdateFaculty = async (facultyId, updatedFaculty) => {
+  const handleUpdateFaculty = async (
+    facultyId,
+    updatedFaculty
+  ) => {
     try {
-      await facultyApi.update(facultyId, updatedFaculty);
+      await facultyApi.update(
+        facultyId,
+        {
+          ...updatedFaculty,
+          designation: normalizeRole(
+            updatedFaculty.designation
+          ),
+        }
+      );
 
       await loadFaculty();
 
       setSelectedFaculty(null);
       setViewMode('list');
     } catch (error) {
-      console.error('Failed to update faculty:', error);
+      console.error(
+        'Failed to update faculty:',
+        error
+      );
 
       alert(
-        error.message || 'Failed to update faculty.'
+        error.message ||
+          'Failed to update faculty.'
       );
     }
   };
@@ -197,7 +294,10 @@ export default function FacultyScreen() {
 
       await loadFaculty();
     } catch (error) {
-      console.error('Failed to deactivate faculty:', error);
+      console.error(
+        'Failed to deactivate faculty:',
+        error
+      );
 
       alert(
         error.message ||
@@ -212,12 +312,11 @@ export default function FacultyScreen() {
   const clearFilters = () => {
     setSearch('');
     setSelectedDepartment('');
-    setSelectedDesignation('');
+    setSelectedRole('');
   };
 
   // ---------------------------------------------------------
-  // ADD FACULTY - AI SCREEN
-  // KEEPING THIS EXACTLY AS A SEPARATE FEATURE
+  // AI ADD FACULTY SCREEN
   // ---------------------------------------------------------
   if (viewMode === 'add-ai') {
     return (
@@ -306,11 +405,12 @@ export default function FacultyScreen() {
               margin: '5px 0 0',
             }}
           >
-            Manage all academic faculty members across departments.
+            Manage all academic faculty members
+            across departments.
           </p>
         </div>
 
-        {/* AI ADD FACULTY - UNCHANGED */}
+        {/* AI ADD FACULTY */}
         <button
           className="btn-primary"
           onClick={() => setViewMode('add-ai')}
@@ -321,7 +421,7 @@ export default function FacultyScreen() {
       </div>
 
       {/* =====================================================
-          FACULTY TABLE
+          FACULTY TABLE CARD
       ====================================================== */}
       <div className="skit-card">
 
@@ -339,16 +439,20 @@ export default function FacultyScreen() {
               className="search-input"
               placeholder="Search faculty by name, email or department..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) =>
+                setSearch(e.target.value)
+              }
             />
           </div>
 
-          {/* DEPARTMENT */}
+          {/* DEPARTMENT FILTER */}
           <select
             className="form-select"
             value={selectedDepartment}
             onChange={(e) =>
-              setSelectedDepartment(e.target.value)
+              setSelectedDepartment(
+                e.target.value
+              )
             }
           >
             <option value="">
@@ -365,31 +469,38 @@ export default function FacultyScreen() {
             ))}
           </select>
 
-          {/* DESIGNATION */}
+          {/* ROLE FILTER */}
           <select
             className="form-select"
-            value={selectedDesignation}
+            value={selectedRole}
             onChange={(e) =>
-              setSelectedDesignation(e.target.value)
+              setSelectedRole(e.target.value)
             }
           >
             <option value="">
-              All Designations
+              All Roles
             </option>
 
             <option value="Professor">
               Professor
             </option>
 
+            <option value="Professor & HOD">
+              Professor &amp; HOD
+            </option>
+
             <option value="Associate Professor">
               Associate Professor
+            </option>
+
+            <option value="Associate Professor & Head R&D">
+              Associate Professor &amp; Head R&amp;D
             </option>
 
             <option value="Assistant Professor">
               Assistant Professor
             </option>
           </select>
-
         </div>
 
         {/* =================================================
@@ -397,7 +508,7 @@ export default function FacultyScreen() {
         ================================================== */}
         {(search ||
           selectedDepartment ||
-          selectedDesignation) && (
+          selectedRole) && (
           <div
             style={{
               display: 'flex',
@@ -414,9 +525,13 @@ export default function FacultyScreen() {
               }}
             >
               Showing{' '}
-              <strong>{filtered.length}</strong>{' '}
+              <strong>
+                {filtered.length}
+              </strong>{' '}
               of{' '}
-              <strong>{facultyList.length}</strong>{' '}
+              <strong>
+                {facultyList.length}
+              </strong>{' '}
               faculty members
             </span>
 
@@ -448,7 +563,6 @@ export default function FacultyScreen() {
                 <th>Emp ID</th>
                 <th>Faculty Name</th>
                 <th>Department</th>
-                <th>Designation</th>
                 <th>Role</th>
                 <th>Workload</th>
                 <th>Status</th>
@@ -462,7 +576,7 @@ export default function FacultyScreen() {
               {loading && (
                 <tr>
                   <td
-                    colSpan="8"
+                    colSpan="7"
                     style={{
                       textAlign: 'center',
                       padding: '40px',
@@ -479,7 +593,7 @@ export default function FacultyScreen() {
                 filtered.length === 0 && (
                   <tr>
                     <td
-                      colSpan="8"
+                      colSpan="7"
                       style={{
                         textAlign: 'center',
                         padding: '50px',
@@ -496,7 +610,9 @@ export default function FacultyScreen() {
                       >
                         <Users
                           size={35}
-                          style={{ opacity: 0.5 }}
+                          style={{
+                            opacity: 0.5,
+                          }}
                         />
 
                         <strong>
@@ -508,7 +624,8 @@ export default function FacultyScreen() {
                             fontSize: '0.8rem',
                           }}
                         >
-                          Try changing your search or filters.
+                          Try changing your search
+                          or filters.
                         </span>
                       </div>
                     </td>
@@ -517,144 +634,143 @@ export default function FacultyScreen() {
 
               {/* FACULTY ROWS */}
               {!loading &&
-                filtered.map((fac) => (
-                  <tr key={fac.id}>
+                filtered.map((fac) => {
+                  const role = normalizeRole(
+                    fac.designation
+                  );
 
-                    {/* EMP ID */}
-                    <td
-                      style={{
-                        fontWeight: '800',
-                        color: '#64748B',
-                      }}
-                    >
-                      {fac.id}
-                    </td>
+                  return (
+                    <tr key={fac.id}>
 
-                    {/* FACULTY NAME */}
-                    <td>
-                      <div
+                      {/* EMP ID */}
+                      <td
                         style={{
-                          fontWeight: '700',
-                          color: 'var(--primary)',
-                          cursor: 'pointer',
-                        }}
-                        onClick={() => {
-                          setSelectedFaculty(fac);
-                          setViewMode('preview');
-                        }}
-                      >
-                        {fac.name}
-                      </div>
-
-                      <div
-                        style={{
-                          fontSize: '0.75rem',
+                          fontWeight: '800',
                           color: '#64748B',
                         }}
                       >
-                        {fac.status}
-                      </div>
-                    </td>
+                        {fac.id}
+                      </td>
 
-                    {/* DEPARTMENT */}
-                    <td
-                      style={{
-                        fontSize: '0.82rem',
-                      }}
-                    >
-                      {fac.department || '—'}
-                    </td>
-
-                    {/* DESIGNATION */}
-                    <td
-                      style={{
-                        fontSize: '0.82rem',
-                      }}
-                    >
-                      {fac.designation || '—'}
-                    </td>
-
-                    {/* ROLE */}
-                    <td>
-                      <span className="badge badge-purple">
-                        {fac.role || 'Faculty'}
-                      </span>
-                    </td>
-
-                    {/* WORKLOAD */}
-                    <td
-                      style={{
-                        fontSize: '0.82rem',
-                        fontWeight: '700',
-                      }}
-                    >
-                      {fac.workload ?? 0}/
-                      {fac.max_workload || '—'} hrs
-                    </td>
-
-                    {/* STATUS */}
-                    <td>
-                      <span
-                        className={
-                          fac.status === 'Inactive'
-                            ? 'badge badge-gray'
-                            : 'badge badge-active'
-                        }
-                      >
-                        {fac.status || 'Active'}
-                      </span>
-                    </td>
-
-                    {/* ACTIONS */}
-                    <td>
-                      <div className="table-actions">
-
-                        {/* VIEW */}
-                        <button
-                          className="action-icon-btn"
-                          title="View Profile Preview"
+                      {/* FACULTY NAME */}
+                      <td>
+                        <div
+                          style={{
+                            fontWeight: '700',
+                            color: 'var(--primary)',
+                            cursor: 'pointer',
+                          }}
                           onClick={() => {
                             setSelectedFaculty(fac);
                             setViewMode('preview');
                           }}
                         >
-                          <Eye size={16} />
-                        </button>
+                          {fac.name}
+                        </div>
 
-                        {/* NORMAL MANUAL EDIT */}
-                        <button
-                          className="action-icon-btn"
-                          title="Edit Faculty"
-                          onClick={() => {
-                            setSelectedFaculty(fac);
-                            setViewMode('edit');
+                        <div
+                          style={{
+                            fontSize: '0.75rem',
+                            color: '#64748B',
                           }}
                         >
-                          <Edit3 size={16} />
-                        </button>
+                          {fac.status}
+                        </div>
+                      </td>
 
-                        {/* DEACTIVATE */}
-                        <button
-                          className="action-icon-btn delete"
-                          title="Deactivate Faculty"
-                          onClick={() =>
-                            handleDeactivate(
-                              fac.id,
-                              fac.name
-                            )
+                      {/* DEPARTMENT */}
+                      <td
+                        style={{
+                          fontSize: '0.82rem',
+                        }}
+                      >
+                        {fac.department || '—'}
+                      </td>
+
+                      {/* ROLE */}
+                      <td
+                        style={{
+                          fontSize: '0.82rem',
+                          fontWeight: '600',
+                        }}
+                      >
+                        {role || '—'}
+                      </td>
+
+                      {/* WORKLOAD */}
+                      <td
+                        style={{
+                          fontSize: '0.82rem',
+                          fontWeight: '700',
+                        }}
+                      >
+                        {fac.workload ?? 0}/
+                        {fac.max_workload || '—'} hrs
+                      </td>
+
+                      {/* STATUS */}
+                      <td>
+                        <span
+                          className={
+                            fac.status === 'Inactive'
+                              ? 'badge badge-gray'
+                              : 'badge badge-active'
                           }
                         >
-                          <Trash2 size={16} />
-                        </button>
+                          {fac.status || 'Active'}
+                        </span>
+                      </td>
 
-                      </div>
-                    </td>
+                      {/* ACTIONS */}
+                      <td>
+                        <div className="table-actions">
 
-                  </tr>
-                ))}
+                          {/* VIEW */}
+                          <button
+                            className="action-icon-btn"
+                            title="View Profile Preview"
+                            onClick={() => {
+                              setSelectedFaculty(fac);
+                              setViewMode('preview');
+                            }}
+                          >
+                            <Eye size={16} />
+                          </button>
+
+                          {/* MANUAL EDIT */}
+                          <button
+                            className="action-icon-btn"
+                            title="Edit Faculty"
+                            onClick={() => {
+                              setSelectedFaculty(fac);
+                              setViewMode('edit');
+                            }}
+                          >
+                            <Edit3 size={16} />
+                          </button>
+
+                          {/* DEACTIVATE */}
+                          <button
+                            className="action-icon-btn delete"
+                            title="Deactivate Faculty"
+                            onClick={() =>
+                              handleDeactivate(
+                                fac.id,
+                                fac.name
+                              )
+                            }
+                          >
+                            <Trash2 size={16} />
+                          </button>
+
+                        </div>
+                      </td>
+
+                    </tr>
+                  );
+                })}
 
             </tbody>
-
           </table>
         </div>
       </div>

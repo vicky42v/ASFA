@@ -3,31 +3,83 @@ const API_BASE =
   'http://127.0.0.1:5000/api';
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+  let response;
+
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+  } catch (error) {
+    throw new Error(
+      `Cannot connect to the backend at ${API_BASE}. ` +
+      'Make sure the Flask server is running.'
+    );
+  }
 
   const body = await response
     .json()
     .catch(() => ({
       success: false,
-      message: 'Invalid server response.',
+      message: `Server returned HTTP ${response.status} with an invalid JSON response.`,
     }));
 
-  if (!response.ok || !body.success) {
-    throw new Error(body.message || 'Request failed.');
+  if (!response.ok || body?.success === false) {
+    const validationErrors =
+      body?.validation?.errors ||
+      body?.data?.validation?.errors ||
+      [];
+
+    const conflictErrors =
+      body?.conflicts ||
+      body?.data?.conflicts ||
+      [];
+
+    const message =
+      body?.message ||
+      body?.error ||
+      (validationErrors.length
+        ? validationErrors.join(' ')
+        : '') ||
+      (conflictErrors.length
+        ? conflictErrors
+            .map((item) =>
+              typeof item === 'string'
+                ? item
+                : item?.message
+            )
+            .filter(Boolean)
+            .join(' ')
+        : '') ||
+      `Request failed (HTTP ${response.status}).`;
+
+    const error = new Error(message);
+
+    error.status = response.status;
+    error.response = body;
+    error.validation = body?.validation;
+    error.conflicts = conflictErrors;
+
+    throw error;
   }
 
-  return body.data;
+  // Backend responses created by ok() normally return:
+  // { success: true, data: ... }
+  //
+  // Keep this fallback so the frontend also works if a route
+  // returns { success: true, ... } directly.
+  return Object.prototype.hasOwnProperty.call(body, 'data')
+    ? body.data
+    : body;
 }
 
 export const api = {
-  get: (path) => request(path),
+  get: (path) =>
+    request(path),
 
   post: (path, data) =>
     request(path, {
@@ -53,7 +105,6 @@ export const api = {
     }),
 };
 
-
 // ============================================================
 // AUTHENTICATION
 // ============================================================
@@ -71,7 +122,6 @@ export const authApi = {
   me: () =>
     api.get('/auth/me'),
 };
-
 
 // ============================================================
 // DEPARTMENTS
@@ -92,7 +142,6 @@ export const departmentApi = {
   deactivate: (id) =>
     api.delete(`/departments/${id}`),
 };
-
 
 // ============================================================
 // FACULTY
@@ -121,15 +170,8 @@ export const facultyApi = {
     api.delete(`/faculty/${id}`),
 };
 
-
 // ============================================================
 // FACULTY ↔ SUBJECT ELIGIBILITY
-//
-// This represents subjects that a faculty member is eligible
-// to teach.
-//
-// Example:
-// Faculty 1 -> Subject 25
 // ============================================================
 
 export const facultySubjectApi = {
@@ -143,34 +185,50 @@ export const facultySubjectApi = {
     api.delete(`/faculty-subjects/${id}`),
 };
 
-
 // ============================================================
 // FACULTY ↔ SUBJECT ASSIGNMENTS
-//
-// This represents the actual subject assigned to a faculty
-// member for an academic year.
-//
-// Example:
-// Faculty 1 -> Subject 25 -> 2026-27
 // ============================================================
 
 export const facultyAssignmentApi = {
-  list: (academicYear = '') =>
-    api.get(
-      `/faculty-subject-assignments${
+  list: (academicYear = '', extra = {}) => {
+    const params = new URLSearchParams();
+
+    if (academicYear) {
+      params.set(
+        'academic_year',
         academicYear
-          ? `?academic_year=${encodeURIComponent(academicYear)}`
-          : ''
+      );
+    }
+
+    Object.entries(extra || {}).forEach(
+      ([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          params.set(key, value);
+        }
+      }
+    );
+
+    const query = params.toString();
+
+    return api.get(
+      `/faculty-subject-assignments${
+        query ? `?${query}` : ''
       }`
-    ),
+    );
+  },
 
   create: (data) =>
-    api.post('/faculty-subject-assignments', data),
+    api.post(
+      '/faculty-subject-assignments',
+      data
+    ),
 
   update: (id, data) =>
-    api.patch(`/faculty-subject-assignments/${id}`, data),
+    api.patch(
+      `/faculty-subject-assignments/${id}`,
+      data
+    ),
 };
-
 
 // ============================================================
 // SUBJECTS
@@ -192,7 +250,6 @@ export const subjectApi = {
     api.delete(`/subjects/${id}`),
 };
 
-
 // ============================================================
 // SCHEMES
 // ============================================================
@@ -205,7 +262,6 @@ export const schemeApi = {
     api.post('/schemes', data),
 };
 
-
 // ============================================================
 // SEMESTERS
 // ============================================================
@@ -214,7 +270,6 @@ export const semesterApi = {
   list: () =>
     api.get('/semesters'),
 };
-
 
 // ============================================================
 // TIMETABLE CONSTRAINTS
@@ -227,7 +282,6 @@ export const constraintApi = {
     ),
 };
 
-
 // ============================================================
 // TIMETABLE
 // ============================================================
@@ -239,15 +293,23 @@ export const timetableApi = {
     ),
 
   generate: (data) =>
-    api.post('/timetable/generate', data),
+    api.post(
+      '/timetable/generate',
+      data
+    ),
 
   validate: (data) =>
-    api.post('/timetable/validate', data),
+    api.post(
+      '/timetable/validate',
+      data
+    ),
 
   save: (data) =>
-    api.post('/timetable/save', data),
+    api.post(
+      '/timetable/save',
+      data
+    ),
 };
-
 
 // ============================================================
 // DASHBOARD
@@ -261,7 +323,6 @@ export const dashboardApi = {
     api.get('/reports/summary'),
 };
 
-
 // ============================================================
 // NOTIFICATIONS
 // ============================================================
@@ -274,7 +335,6 @@ export const notificationApi = {
     api.post('/notifications', data),
 };
 
-
 // ============================================================
 // AI CHATBOT
 // ============================================================
@@ -285,7 +345,6 @@ export const chatbotApi = {
       message,
     }),
 };
-
 
 // ============================================================
 // USERS / ROLE MANAGEMENT
@@ -302,7 +361,6 @@ export const userApi = {
     api.patch(`/users/${id}`, data),
 };
 
-
 // ============================================================
 // AUDIT LOGS
 // ============================================================
@@ -311,7 +369,6 @@ export const auditApi = {
   list: () =>
     api.get('/audit-logs'),
 };
-
 
 // ============================================================
 // BACKUP & RESTORE
@@ -325,11 +382,13 @@ export const backupApi = {
     api.post('/backups'),
 
   restore: (id, confirmation) =>
-    api.post(`/backups/${id}/restore`, {
-      confirmation,
-    }),
+    api.post(
+      `/backups/${id}/restore`,
+      {
+        confirmation,
+      }
+    ),
 };
-
 
 // ============================================================
 // SETTINGS
@@ -340,5 +399,8 @@ export const settingsApi = {
     api.get('/settings'),
 
   save: (values) =>
-    api.put('/settings', values),
+    api.put(
+      '/settings',
+      values
+    ),
 };
