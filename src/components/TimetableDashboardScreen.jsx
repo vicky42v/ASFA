@@ -24,6 +24,7 @@ import {
   timetableApi,
   facultyApi,
   subjectApi,
+  facultyAssignmentDetailApi,
 } from '../services/api';
 
 export default function TimetableDashboardScreen() {
@@ -70,6 +71,7 @@ export default function TimetableDashboardScreen() {
     semester_id: '',
     academic_year: '2026-27',
     semester_type: 'Odd',
+    cycle: 'P',
   });
 
   // =========================================================
@@ -79,41 +81,18 @@ export default function TimetableDashboardScreen() {
   const [facultyAssignments, setFacultyAssignments] =
     useState({});
 
+  // { subjectId: { Theory: { main, co }, Lab: { main, co } } }
+  // Keep facultyAssignments above as a backwards-compatible main-faculty map
+  // for elective selection and existing screen behaviour.
+  const [componentAssignments, setComponentAssignments] =
+    useState({});
+
   const [savedAssignments, setSavedAssignments] =
     useState([]);
 
   const [assignmentSearch, setAssignmentSearch] =
     useState('');
 
-  const [assignmentLoading, setAssignmentLoading] =
-    useState(false);
-
-  const [assignmentSaving, setAssignmentSaving] =
-    useState(false);
-
-  // =========================================================
-  // TIMETABLE STATE
-  // =========================================================
-
-  const [selectedSlot, setSelectedSlot] = useState({
-    day: 'Tuesday',
-    period: 'Period V (1:45 - 2:40)',
-    subject: 'Project (Team Based)',
-  });
-
-  const [isGenerating, setIsGenerating] =
-    useState(false);
-
-  const [message, setMessage] = useState('');
-
-  // =========================================================
-  // ID HELPERS
-  //
-  // Different APIs sometimes return:
-  // id
-  // department_id
-  // scheme_id
-  // semester_id
   //
   // These helpers support all of them.
   // =========================================================
@@ -264,6 +243,27 @@ export default function TimetableDashboardScreen() {
     Number(subject?.tutorial_hours || 0) +
     Number(subject?.practical_hours || 0);
 
+  const getSubjectComponents = (subject) => {
+    const components = [];
+    if (Number(subject?.lecture_hours || 0) + Number(subject?.tutorial_hours || 0) > 0) {
+      components.push('Theory');
+    }
+    if (Number(subject?.practical_hours || 0) > 0) {
+      components.push('Lab');
+    }
+    return components;
+  };
+
+  const getComponentAssignment = (subjectId, component) =>
+    componentAssignments[String(subjectId)]?.[component] || {};
+
+  const subjectHasRequiredAssignments = (subject) =>
+    getSubjectComponents(subject).every(
+      (component) => Boolean(
+        getComponentAssignment(getSubjectId(subject), component).main
+      )
+    );
+
   const getFacultyMaxWorkload = (faculty) => {
     const value = Number(faculty?.max_workload);
     return Number.isFinite(value) ? value : 0;
@@ -340,6 +340,40 @@ export default function TimetableDashboardScreen() {
       semesters,
       context.semester_type,
     ]);
+
+  const selectedSemester = useMemo(
+    () => semesters.find(
+      (semester) => String(getSemesterId(semester)) === String(context.semester_id)
+    ),
+    [semesters, context.semester_id]
+  );
+
+  const isFoundationSemester = [1, 2].includes(
+    Number(getSemesterNo(selectedSemester))
+  );
+
+  const basicScienceDepartment = useMemo(
+    () => departments.find((department) => {
+      const name = String(getDepartmentName(department)).toLowerCase();
+      const code = String(department?.department_code ?? department?.code ?? '').toLowerCase();
+      return (name.includes('basic') && name.includes('science')) ||
+        name.includes('science and humanities') || ['bs', 'bsc', 'sh'].includes(code);
+    }),
+    [departments]
+  );
+
+  // Semester 1/2 belongs to Basic Science and always has a distinct P/C
+  // timetable context.  Keep the existing selector layout, but prevent an
+  // accidental engineering-department context from being sent to the API.
+  useEffect(() => {
+    if (!isFoundationSemester || !basicScienceDepartment) return;
+    const basicScienceId = String(getDepartmentId(basicScienceDepartment));
+    setContext((current) => ({
+      ...current,
+      department_id: basicScienceId,
+      cycle: current.cycle === 'C' ? 'C' : 'P',
+    }));
+  }, [isFoundationSemester, basicScienceDepartment]);
 
 
   // =========================================================
@@ -644,6 +678,7 @@ export default function TimetableDashboardScreen() {
     context.semester_id,
     context.academic_year,
     context.semester_type,
+    context.cycle,
   ]);
 
   // =========================================================
@@ -674,40 +709,21 @@ export default function TimetableDashboardScreen() {
                 '',
             });
 
-          let data;
+          const data = await facultyAssignmentDetailApi.list({
+            academic_year: context.academic_year,
+            department_id: context.department_id || '',
+            semester_id: context.semester_id || '',
+            semester_type: context.semester_type || '',
+          });
 
-          try {
-            data = await api.get(
-              `/faculty-subject-assignments?${params.toString()}`
-            );
-          } catch (filteredError) {
-            console.warn(
-              'Filtered faculty-assignment request failed; retrying by academic year:',
-              filteredError
-            );
-
-            data = await api.get(
-              `/faculty-subject-assignments?academic_year=${encodeURIComponent(
-                context.academic_year
-              )}`
-            );
-          }
-
-          const assignments = toArray(
-            data,
-            [
-              'assignments',
-              'faculty_subject_assignments',
-              'items',
-              'rows',
-            ]
-          );
+          const assignments = toArray(data, ['items', 'rows']);
 
           setSavedAssignments(
             assignments
           );
 
           const assignmentMap = {};
+          const componentMap = {};
 
           assignments.forEach(
             (assignment) => {
@@ -715,13 +731,13 @@ export default function TimetableDashboardScreen() {
                 assignment.subject_id &&
                 assignment.faculty_id
               ) {
-                assignmentMap[
-                  String(
-                    assignment.subject_id
-                  )
-                ] = String(
-                  assignment.faculty_id
-                );
+                const subjectId = String(assignment.subject_id);
+                const component = String(assignment.component || 'Theory');
+                const role = String(assignment.assignment_role || 'Main').toLowerCase();
+                componentMap[subjectId] ||= {};
+                componentMap[subjectId][component] ||= {};
+                componentMap[subjectId][component][role] = String(assignment.faculty_id);
+                if (role === 'main') assignmentMap[subjectId] = String(assignment.faculty_id);
               }
             }
           );
@@ -729,6 +745,7 @@ export default function TimetableDashboardScreen() {
           setFacultyAssignments(
             assignmentMap
           );
+          setComponentAssignments(componentMap);
         } catch (error) {
           console.error(
             'Failed to load faculty assignments:',
@@ -747,7 +764,9 @@ export default function TimetableDashboardScreen() {
   }, [
     context.academic_year,
     context.department_id,
+    context.semester_id,
     context.semester_type,
+    context.cycle,
   ]);
 
   // =========================================================
@@ -1219,16 +1238,12 @@ export default function TimetableDashboardScreen() {
   const missingAssignments =
     useMemo(() => {
       return requiredSubjects.filter(
-        (subject) =>
-          !facultyAssignments[
-            String(
-              getSubjectId(subject)
-            )
-          ]
+        (subject) => !subjectHasRequiredAssignments(subject)
       );
     }, [
       requiredSubjects,
       facultyAssignments,
+      componentAssignments,
     ]);
 
   const assignedCount =
@@ -1311,22 +1326,32 @@ export default function TimetableDashboardScreen() {
   // SELECT FACULTY
   // =========================================================
 
-  const handleFacultyChange = (
-    subject,
-    facultyId
-  ) => {
-    const subjectId =
-      getSubjectId(subject);
-
-    setFacultyAssignments(
-      (current) => ({
-        ...current,
-
-        [String(subjectId)]:
-          facultyId,
-      })
-    );
+  const handleComponentFacultyChange = (subject, component, role, facultyId) => {
+    const subjectId = String(getSubjectId(subject));
+    setComponentAssignments((current) => ({
+      ...current,
+      [subjectId]: {
+        ...(current[subjectId] || {}),
+        [component]: {
+          ...(current[subjectId]?.[component] || {}),
+          [role]: facultyId,
+        },
+      },
+    }));
+    if (role === 'main') {
+      setFacultyAssignments((current) => ({ ...current, [subjectId]: facultyId }));
+    }
   };
+
+  // Preserve the existing primary selector: it addresses Theory when a
+  // subject has one, otherwise it is the Lab Main Faculty selector.
+  const handleFacultyChange = (subject, facultyId) =>
+    handleComponentFacultyChange(
+      subject,
+      getSubjectComponents(subject).includes('Theory') ? 'Theory' : 'Lab',
+      'main',
+      facultyId
+    );
 
   // =========================================================
   // CHANGE SEMESTER TYPE
@@ -1351,6 +1376,7 @@ export default function TimetableDashboardScreen() {
       );
 
       setFacultyAssignments({});
+      setComponentAssignments({});
       setAssignmentSearch('');
       setEntries([]);
       setGeneratedSemesters({});
@@ -1402,6 +1428,7 @@ export default function TimetableDashboardScreen() {
       );
 
       setFacultyAssignments({});
+      setComponentAssignments({});
       setEntries([]);
       setGeneratedSemesters({});
       setMessage('');
@@ -1418,10 +1445,9 @@ export default function TimetableDashboardScreen() {
         setMessage('');
 
         const selectedSubjects = requiredSubjects.filter(
-          (subject) => {
-            const id = String(getSubjectId(subject));
-            return Boolean(facultyAssignments[id]);
-          }
+          (subject) => getSubjectComponents(subject).some(
+            (component) => Boolean(getComponentAssignment(getSubjectId(subject), component).main)
+          )
         );
 
         if (selectedSubjects.length === 0) {
@@ -1430,12 +1456,6 @@ export default function TimetableDashboardScreen() {
           );
           return;
         }
-
-        const activeAssignments = savedAssignments.filter(
-          (assignment) =>
-            String(assignment.status ?? 'Active').toLowerCase() ===
-            'active'
-        );
 
         const exceeded = workloadExceededFaculty;
         if (exceeded.length > 0) {
@@ -1454,15 +1474,6 @@ export default function TimetableDashboardScreen() {
 
         for (const subject of selectedSubjects) {
           const subjectId = String(getSubjectId(subject));
-          const desiredFacultyId = String(
-            facultyAssignments[subjectId]
-          );
-
-
-          const existing = activeAssignments.filter(
-            (assignment) =>
-              String(assignment.subject_id) === subjectId
-          );
 
           // -------------------------------------------------------
           // PEC/OEC OPTION GROUP
@@ -1522,100 +1533,36 @@ export default function TimetableDashboardScreen() {
                     )
                 );
 
-              const oldSiblingAssignments =
-                activeAssignments.filter(
-                  (assignment) =>
-                    siblingSubjectIds.includes(
-                      String(
-                        assignment.subject_id
-                      )
-                    ) &&
-                    String(
-                      assignment.subject_id
-                    ) !== subjectId
-                );
-
-              for (
-                const siblingAssignment of oldSiblingAssignments
-              ) {
-                await api.patch(
-                  `/faculty-subject-assignments/${getAssignmentId(siblingAssignment)}`,
-                  {
-                    status: 'Inactive',
-                  }
-                );
+              for (const siblingSubjectId of siblingSubjectIds) {
+                if (siblingSubjectId === subjectId) continue;
+                for (const component of ['Theory', 'Lab']) {
+                  await facultyAssignmentDetailApi.clear(
+                    siblingSubjectId,
+                    component,
+                    context.academic_year
+                  ).catch(() => undefined);
+                }
               }
             }
           }
 
-          const alreadyCorrect = existing.some(
-            (assignment) =>
-              String(assignment.faculty_id) === desiredFacultyId
-          );
-
-          if (alreadyCorrect && existing.length === 1) {
-            continue;
-          }
-
-          // Deactivate old active assignment(s) first. The backend
-          // exposes PATCH for changing assignment status.
-          for (const assignment of existing) {
-            if (
-              String(assignment.faculty_id) !==
-                desiredFacultyId ||
-              existing.length > 1
-            ) {
-              await api.patch(
-                `/faculty-subject-assignments/${getAssignmentId(assignment)}`,
-                { status: 'Inactive' }
-              );
-            }
-          }
-
-          if (!alreadyCorrect || existing.length > 1) {
-            await api.post(
-              '/faculty-subject-assignments',
-              {
-                faculty_id: Number(desiredFacultyId),
-                subject_id: Number(subjectId),
-                academic_year: context.academic_year,
-                status: 'Active',
-              }
-            );
+          for (const component of getSubjectComponents(subject)) {
+            const assignment = getComponentAssignment(subjectId, component);
+            if (!assignment.main) continue;
+            await facultyAssignmentDetailApi.save({
+              subject_id: Number(subjectId),
+              academic_year: context.academic_year,
+              component,
+              main_faculty_id: Number(assignment.main),
+              co_faculty_id: component === 'Lab' && assignment.co
+                ? Number(assignment.co)
+                : null,
+              department_id: context.department_id,
+              cycle: isFoundationSemester ? context.cycle : null,
+            });
             changed += 1;
           }
         }
-
-        const params = new URLSearchParams({
-          academic_year: context.academic_year,
-          department_id: context.department_id || '',
-          semester_type: context.semester_type || '',
-        });
-
-        const refreshed = await api.get(
-          `/faculty-subject-assignments?${params.toString()}`
-        );
-
-        const refreshedAssignments = Array.isArray(refreshed)
-          ? refreshed
-          : [];
-
-        setSavedAssignments(refreshedAssignments);
-
-        // Rebuild local assignment state only from active rows.
-        const assignmentMap = {};
-        refreshedAssignments.forEach((assignment) => {
-          if (
-            String(assignment.status ?? 'Active').toLowerCase() === 'active' &&
-            assignment.subject_id &&
-            assignment.faculty_id
-          ) {
-            assignmentMap[String(assignment.subject_id)] =
-              String(assignment.faculty_id);
-          }
-        });
-
-        setFacultyAssignments(assignmentMap);
 
         setMessage(
           changed === 0
@@ -2440,6 +2387,20 @@ export default function TimetableDashboardScreen() {
   // FACULTY ASSIGNMENT VIEW
   // =========================================================
 
+  const renderCycleSelector = () => isFoundationSemester && (
+    <div className="form-group" style={{ margin: 0, minWidth: '145px' }}>
+      <label className="form-label">Cycle</label>
+      <select
+        className="form-select"
+        value={context.cycle || 'P'}
+        onChange={(e) => setContext((current) => ({ ...current, cycle: e.target.value }))}
+      >
+        <option value="P">P Cycle</option>
+        <option value="C">C Cycle</option>
+      </select>
+    </div>
+  );
+
   const renderFacultyAssignmentView =
     () => (
       <div
@@ -2586,6 +2547,7 @@ export default function TimetableDashboardScreen() {
                     e.target.value
                   )
                 }
+                disabled={isFoundationSemester}
               >
                 {departments.map(
                   (department) => {
@@ -2645,6 +2607,8 @@ export default function TimetableDashboardScreen() {
 
             {/* SEMESTER */}
             {renderSemesterSelector()}
+
+            {renderCycleSelector()}
 
             {/* ACADEMIC YEAR */}
             <div
@@ -2891,12 +2855,11 @@ export default function TimetableDashboardScreen() {
                           subject
                         );
 
+                      const primaryComponent = getSubjectComponents(subject).includes('Theory')
+                        ? 'Theory'
+                        : 'Lab';
                       const selectedFaculty =
-                        facultyAssignments[
-                          String(
-                            subjectId
-                          )
-                        ] || '';
+                        getComponentAssignment(subjectId, primaryComponent).main || '';
 
                       return (
                         <tr
@@ -2997,7 +2960,7 @@ export default function TimetableDashboardScreen() {
                               }
                             >
                               <option value="">
-                                Select Faculty
+                                Select {primaryComponent} Main Faculty
                               </option>
 
                               {getAssignableFaculty().map(
@@ -3028,6 +2991,41 @@ export default function TimetableDashboardScreen() {
                               )}
                             </select>
 
+                            {getSubjectComponents(subject).includes('Lab') && (
+                              <div style={{ marginTop: '8px' }}>
+                                <div style={{ fontSize: '0.7rem', fontWeight: '800', color: '#475569', marginBottom: '4px' }}>
+                                  Lab — {getSubjectComponents(subject).includes('Theory') ? 'Main' : 'Main'} Faculty
+                                </div>
+                                <select
+                                  className="form-select"
+                                  value={getComponentAssignment(subjectId, 'Lab').main || ''}
+                                  onChange={(e) => handleComponentFacultyChange(subject, 'Lab', 'main', e.target.value)}
+                                >
+                                  <option value="">Select Lab Main Faculty</option>
+                                  {getAssignableFaculty().map((faculty) => (
+                                    <option key={getFacultyId(faculty)} value={getFacultyId(faculty)}>
+                                      {getFacultyName(faculty)}{getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div style={{ fontSize: '0.7rem', fontWeight: '800', color: '#475569', margin: '6px 0 4px' }}>
+                                  Lab — Co Faculty (optional)
+                                </div>
+                                <select
+                                  className="form-select"
+                                  value={getComponentAssignment(subjectId, 'Lab').co || ''}
+                                  onChange={(e) => handleComponentFacultyChange(subject, 'Lab', 'co', e.target.value)}
+                                >
+                                  <option value="">No Co Faculty</option>
+                                  {getAssignableFaculty().map((faculty) => (
+                                    <option key={getFacultyId(faculty)} value={getFacultyId(faculty)}>
+                                      {getFacultyName(faculty)}{getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+
                             {selectedFaculty && (() => {
                               const selected = facultyList.find(
                                 (item) => String(getFacultyId(item)) === String(selectedFaculty)
@@ -3056,7 +3054,7 @@ export default function TimetableDashboardScreen() {
                           </td>
 
                           <td>
-                            {selectedFaculty ? (
+                            {subjectHasRequiredAssignments(subject) ? (
                               <span className="badge badge-active">
                                 <CheckCircle2
                                   size={
@@ -3259,6 +3257,7 @@ export default function TimetableDashboardScreen() {
                       e.target.value
                     )
                   }
+                  disabled={isFoundationSemester}
                 >
                   {departments.map(
                     (department) => {
@@ -3319,6 +3318,8 @@ export default function TimetableDashboardScreen() {
 
               {/* SEMESTER */}
               {renderSemesterSelector()}
+
+              {renderCycleSelector()}
 
               {/* ACADEMIC YEAR */}
               <div

@@ -44,10 +44,11 @@ Open [http://localhost:5173](http://localhost:5173) in your browser to view the 
 1. Create `timetable_db` using the provided `timetable_db.sql` only when setting up a new local database. Do not import it into a database that already holds project data.
 2. Copy `.env.example` to `.env` and enter local MySQL credentials.
    If the MySQL client is not on `PATH`, set `MYSQL_CLIENT_PATH` to its local executable.
-3. Run the additive migration once. It creates only authentication, notification, audit, backup, settings, and soft-status support tables; it does not modify or delete academic tables.
+3. Run the additive migrations once. They only add support tables/columns; they do not delete academic data.
 
 ```powershell
 mysql -u root -p timetable_db < backend/migrations/001_admin_support.sql
+mysql -u root -p timetable_db < backend/migrations/002_component_assignments_and_timetable_context.sql
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r backend/requirements.txt
 .\.venv\Scripts\python -m backend.app

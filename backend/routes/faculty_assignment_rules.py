@@ -19,9 +19,13 @@ def _basic_science(department):
         str(department.get("department_name") or ""),
         str(department.get("department_code") or ""),
     ]).strip().lower()
-    return "basic" in text and "science" in text or text in {
-        "bs", "bsc", "basic science", "basic sciences"
-    }
+    return (
+        ("basic" in text and "science" in text)
+        or "science and humanities" in text
+        or text in {
+            "bs", "bsc", "basic science", "basic sciences", "sh"
+        }
+    )
 
 
 def _component_rows(subject):
@@ -44,10 +48,13 @@ def _subject(subject_id):
             sem.semester_no,
             sem.semester_type,
             d.department_name,
-            d.department_code
+            d.department_code,
+            COALESCE(es.is_active, 1) AS is_active
         FROM subject s
         JOIN semester sem ON sem.semester_id=s.semester_id
         JOIN department d ON d.department_id=s.department_id
+        LEFT JOIN entity_status es
+            ON es.entity_type='subject' AND es.entity_id=s.subject_id
         WHERE s.subject_id=%s
     """, (subject_id,))
 
@@ -55,6 +62,8 @@ def _subject(subject_id):
 def _validate_context_for_subject(subject, payload):
     if not subject:
         return "Subject not found."
+    if not bool(subject.get("is_active", 1)):
+        return "Subject is inactive."
 
     semester_no = int(subject.get("semester_no") or 0)
     department_id = payload.get("department_id")
@@ -87,6 +96,7 @@ def _validate_faculty(faculty_id, subject, role):
             f.faculty_name,
             f.department_id,
             f.status,
+            f.max_workload,
             d.department_name,
             d.department_code
         FROM faculty f
@@ -110,6 +120,19 @@ def _validate_faculty(faculty_id, subject, role):
         return None, "Co-faculty is available only for lab components."
 
     return faculty, None
+
+
+def _validate_eligibility(faculty_id, subject_id):
+    """Eligibility is an explicit prerequisite for a teaching assignment."""
+    if row(
+        """
+        SELECT 1 FROM faculty_subject
+        WHERE faculty_id=%s AND subject_id=%s
+        """,
+        (faculty_id, subject_id),
+    ):
+        return None
+    return "Faculty is not eligible to teach this subject. Add faculty-subject eligibility first."
 
 
 @bp.get("/faculty-assignment-details")
@@ -198,6 +221,9 @@ def save_detail_assignment():
     main_faculty, error = _validate_faculty(main_faculty_id, subject, "Main")
     if error:
         return fail(error, 422)
+    error = _validate_eligibility(main_faculty_id, subject_id)
+    if error:
+        return fail(error, 422)
 
     co_faculty = None
     if co_faculty_id not in (None, "", 0, "0"):
@@ -206,6 +232,9 @@ def save_detail_assignment():
         if str(main_faculty_id) == str(co_faculty_id):
             return fail("Main faculty and Co-faculty must be different.", 422)
         co_faculty, error = _validate_faculty(co_faculty_id, subject, "Co")
+        if error:
+            return fail(error, 422)
+        error = _validate_eligibility(co_faculty_id, subject_id)
         if error:
             return fail(error, 422)
 
@@ -335,12 +364,6 @@ def save_detail_assignment():
                 (faculty_id, subject_id, academic_year, status)
             VALUES (%s,%s,%s,'Active')
         """, (int(main_faculty_id), subject_id, academic_year))
-
-    # Preserve legacy eligibility as a convenience, but eligibility is
-    # not a scheduling requirement anymore.
-    for faculty_id in faculty_ids:
-        if not row("SELECT 1 FROM faculty_subject WHERE faculty_id=%s AND subject_id=%s", (faculty_id, subject_id)):
-            execute("INSERT INTO faculty_subject (faculty_id, subject_id) VALUES (%s,%s)", (faculty_id, subject_id))
 
     audit("Saved Faculty Component Assignment", "Assignments", str(subject_id))
 

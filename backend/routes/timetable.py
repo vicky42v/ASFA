@@ -107,11 +107,13 @@ def _is_basic_science(department):
 
     return (
         ("basic" in text and "science" in text)
+        or "science and humanities" in text
         or text in {
             "bs",
             "bsc",
             "basic science",
             "basic sciences",
+            "sh",
         }
     )
 
@@ -339,6 +341,13 @@ def generate_timetable():
         )
 
     try:
+        # Pass number_of_outputs from payload to context for alternative generation
+        number_of_outputs = payload.get(
+            "number_of_outputs",
+            payload.get("number_of_alternatives", 1),
+        )
+        context["number_of_outputs"] = number_of_outputs
+
         result = generate(context)
 
     except Exception as exc:
@@ -417,6 +426,7 @@ def generate_timetable():
     validation = validate_entries(
         generated_entries,
         constraint,
+        context,
     )
 
     if not validation.get("valid"):
@@ -466,6 +476,10 @@ def generate_timetable():
         {
             "context": context,
             "timetable": generated_entries,
+            "alternatives": result.get(
+                "alternatives",
+                [],
+            ),
             "validation": validation,
             "conflicts": validation.get(
                 "conflicts",
@@ -475,7 +489,7 @@ def generate_timetable():
                 "warnings",
                 [],
             ),
-            "summary": validation.get(
+            "summary": result.get(
                 "summary",
                 {},
             ),
@@ -583,6 +597,7 @@ def validate():
     result = validate_entries(
         entries,
         constraint,
+        context if not missing else None,
     )
 
     return ok(
@@ -738,6 +753,7 @@ def save():
     validation = validate_entries(
         entries,
         constraint,
+        context,
     )
 
     if not validation.get("valid"):

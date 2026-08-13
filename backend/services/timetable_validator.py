@@ -1,5 +1,7 @@
 from collections import Counter, defaultdict
 
+from backend.db import rows
+
 
 def _as_int(value, default=0):
     try:
@@ -39,6 +41,146 @@ def _component(entry):
     return value
 
 
+def _raw_component(entry):
+    return str(entry.get("component") or "Theory").strip().title()
+
+
+def _assignment_conflicts(entries, context):
+    """Check that each proposed entry exactly matches the saved assignment."""
+    if not context or not entries:
+        return []
+
+    subject_ids = sorted({
+        _as_int(item.get("subject_id"))
+        for item in entries
+        if _as_int(item.get("subject_id")) > 0
+    })
+    if not subject_ids:
+        return []
+
+    placeholders = ",".join(["%s"] * len(subject_ids))
+    details = rows(
+        f"""
+        SELECT subject_id, faculty_id, component, assignment_role
+        FROM faculty_subject_assignment_detail
+        WHERE academic_year = %s
+          AND status = 'Active'
+          AND subject_id IN ({placeholders})
+        """,
+        tuple([context.get("academic_year")] + subject_ids),
+    )
+    expected = defaultdict(dict)
+    for detail in details:
+        expected[(int(detail["subject_id"]), detail["component"])][
+            detail["assignment_role"]
+        ] = _as_int(detail["faculty_id"])
+
+    conflicts = []
+    selected_cycle = context.get("cycle")
+    for index, entry in enumerate(entries):
+        subject_id = _as_int(entry.get("subject_id"))
+        component = _raw_component(entry)
+        if component not in ("Theory", "Lab"):
+            conflicts.append({
+                "type": "invalid_component",
+                "entry_index": index,
+                "message": "Timetable component must be Theory or Lab.",
+            })
+            continue
+
+        roles = expected.get((subject_id, component), {})
+        main = _as_int(entry.get("faculty_id"))
+        co = _as_int(entry.get("co_faculty_id"))
+        if not roles.get("Main"):
+            conflicts.append({
+                "type": "missing_assignment",
+                "entry_index": index,
+                "message": "Timetable entry has no active Main faculty assignment for its subject component.",
+            })
+        elif main != roles["Main"]:
+            conflicts.append({
+                "type": "invalid_faculty_assignment",
+                "entry_index": index,
+                "message": "Timetable entry does not use its assigned Main faculty.",
+            })
+        elif component == "Lab" and co != _as_int(roles.get("Co")):
+            conflicts.append({
+                "type": "invalid_co_faculty_assignment",
+                "entry_index": index,
+                "message": "Timetable entry does not use its assigned Co-faculty.",
+            })
+        elif component == "Theory" and roles.get("Co"):
+            conflicts.append({
+                "type": "invalid_theory_assignment",
+                "entry_index": index,
+                "message": "Theory assignment cannot have Co-faculty.",
+            })
+
+        item_cycle = entry.get("cycle")
+        if selected_cycle in ("P", "C") and item_cycle not in (None, "", selected_cycle):
+            conflicts.append({
+                "type": "cycle_context_conflict",
+                "entry_index": index,
+                "message": "Timetable entry belongs to a different P/C cycle.",
+            })
+        if selected_cycle not in ("P", "C") and item_cycle not in (None, ""):
+            conflicts.append({
+                "type": "cycle_context_conflict",
+                "entry_index": index,
+                "message": "Only Semester 1 and Semester 2 timetable entries may specify a cycle.",
+            })
+
+    # Saved timetables from other semester contexts also occupy faculty.
+    # This protects manual save requests, while the generator uses the same
+    # persisted occupancy when building its proposal.
+    proposed_slots = {
+        (_as_int(item.get("faculty_id")), item.get("day"), _as_int(item.get("period")))
+        for item in entries
+        if _as_int(item.get("faculty_id")) and item.get("day") and _as_int(item.get("period"))
+    }
+    proposed_slots.update({
+        (_as_int(item.get("co_faculty_id")), item.get("day"), _as_int(item.get("period")))
+        for item in entries
+        if _as_int(item.get("co_faculty_id")) and item.get("day") and _as_int(item.get("period"))
+    })
+    if proposed_slots:
+        saved = rows(
+            """
+            SELECT department_id, scheme_id, semester_id, cycle, day, period,
+                   faculty_id, co_faculty_id
+            FROM timetable
+            WHERE academic_year = %s AND semester_type = %s
+            """,
+            (context.get("academic_year"), context.get("semester_type")),
+        )
+        for saved_entry in saved:
+            same_context = (
+                str(saved_entry.get("department_id")) == str(context.get("department_id"))
+                and str(saved_entry.get("scheme_id")) == str(context.get("scheme_id"))
+                and str(saved_entry.get("semester_id")) == str(context.get("semester_id"))
+                and str(saved_entry.get("cycle") or "") == str(context.get("cycle") or "")
+            )
+            if same_context:
+                continue
+            for faculty_id in (
+                _as_int(saved_entry.get("faculty_id")),
+                _as_int(saved_entry.get("co_faculty_id")),
+            ):
+                if faculty_id and (
+                    faculty_id,
+                    saved_entry.get("day"),
+                    _as_int(saved_entry.get("period")),
+                ) in proposed_slots:
+                    conflicts.append({
+                        "type": "faculty_conflict_existing_timetable",
+                        "faculty_id": faculty_id,
+                        "message": "Faculty is already scheduled in another timetable at this time slot.",
+                    })
+                    break
+
+    return conflicts
+
+
 def _faculty_ids(entry):
     """
     Return Main + Co faculty IDs.
@@ -74,7 +216,7 @@ def _faculty_ids(entry):
     return result
 
 
-def validate_entries(entries, constraints=None):
+def validate_entries(entries, constraints=None, context=None):
     """
     Validate a generated or manually edited timetable.
 
@@ -129,6 +271,15 @@ def validate_entries(entries, constraints=None):
     # =========================================================
 
     for index, item in enumerate(entries):
+
+        if _raw_component(item) not in ("Theory", "Lab"):
+            conflicts.append(
+                {
+                    "type": "invalid_component",
+                    "entry_index": index,
+                    "message": "Timetable component must be Theory or Lab.",
+                }
+            )
 
         day = item.get("day")
 
@@ -665,6 +816,12 @@ def validate_entries(entries, constraints=None):
                         ),
                     }
                 )
+
+    # =========================================================
+    # DATABASE-BACKED ASSIGNMENT / CYCLE CHECKS
+    # =========================================================
+
+    conflicts.extend(_assignment_conflicts(entries, context))
 
     # =========================================================
     # RETURN

@@ -7,6 +7,7 @@ from backend.utils.http import fail
 from backend.routes.auth import bp as auth_bp
 from backend.routes.academic import bp as academic_bp
 from backend.routes.catalog import bp as catalog_bp
+from backend.routes.faculty_assignment_rules import bp as faculty_assignment_rules_bp
 from backend.routes.timetable import bp as timetable_bp
 from backend.routes.admin import bp as admin_bp
 from backend.routes.chatbot import bp as chatbot_bp
@@ -15,7 +16,7 @@ def create_app():
     app=Flask(__name__); app.config.from_object(Config)
     app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE="Lax")
     CORS(app,origins=r".*",supports_credentials=True)
-    for blueprint in (auth_bp,academic_bp,catalog_bp,timetable_bp,admin_bp,chatbot_bp):app.register_blueprint(blueprint)
+    for blueprint in (auth_bp,academic_bp,catalog_bp,faculty_assignment_rules_bp,timetable_bp,admin_bp,chatbot_bp):app.register_blueprint(blueprint)
     @app.get("/api/health")
     def health(): return {"success":True,"service":"ai-asfa-backend"}
     @app.errorhandler(Error)

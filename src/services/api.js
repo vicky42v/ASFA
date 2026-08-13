@@ -230,6 +230,23 @@ export const facultyAssignmentApi = {
     ),
 };
 
+// Component-aware assignments are the source of truth for timetable
+// generation.  The legacy API above remains available for older callers.
+export const facultyAssignmentDetailApi = {
+  list: (data = {}) =>
+    api.get(
+      `/faculty-assignment-details?${new URLSearchParams(data)}`
+    ),
+
+  save: (data) =>
+    api.post('/faculty-assignment-details', data),
+
+  clear: (subjectId, component, academicYear) =>
+    api.delete(
+      `/faculty-assignment-details/${subjectId}/${component}?academic_year=${encodeURIComponent(academicYear)}`
+    ),
+};
+
 // ============================================================
 // SUBJECTS
 // ============================================================

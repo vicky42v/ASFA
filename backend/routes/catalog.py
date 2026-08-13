@@ -1442,42 +1442,74 @@ def create_assignment():
             "Faculty, subject, and academic year are required."
         )
 
-    # --------------------------------------------------------
-    # MAKE SURE FACULTY IS ELIGIBLE
-    # --------------------------------------------------------
+    # This legacy endpoint represents a Theory/Main assignment.  The
+    # component-aware endpoint below is used for Labs and Co-faculty.
+    subject = row(
+        """
+        SELECT s.*, sem.semester_no, COALESCE(es.is_active, 1) AS is_active
+        FROM subject s
+        JOIN semester sem ON sem.semester_id = s.semester_id
+        LEFT JOIN entity_status es
+            ON es.entity_type = 'subject' AND es.entity_id = s.subject_id
+        WHERE s.subject_id = %s
+        """,
+        (subject_id,),
+    )
 
+    if not subject:
+        return fail("Subject not found.", 404)
+    if not subject.get("is_active"):
+        return fail("Subject is inactive.", 422)
+    if int(subject.get("lecture_hours") or 0) + int(subject.get("tutorial_hours") or 0) <= 0:
+        return fail(
+            "This subject has no Theory component. Use the component assignment endpoint for Lab assignments.",
+            422,
+        )
+
+    faculty = row(
+        """
+        SELECT faculty_id, faculty_name, status
+        FROM faculty WHERE faculty_id = %s
+        """,
+        (faculty_id,),
+    )
+    if not faculty:
+        return fail("Faculty member not found.", 404)
+    if str(faculty.get("status") or "").lower() != "active":
+        return fail("Faculty member is inactive.", 422)
     if not row(
         """
-        SELECT 1
-        FROM faculty_subject
-
-        WHERE
-            faculty_id = %s
-            AND subject_id = %s
+        SELECT 1 FROM faculty_subject
+        WHERE faculty_id = %s AND subject_id = %s
         """,
-        (
-            faculty_id,
-            subject_id,
-        ),
+        (faculty_id, subject_id),
     ):
+        return fail(
+            "Faculty is not eligible to teach this subject. Add faculty-subject eligibility first.",
+            422,
+        )
 
-        execute(
-            """
-            INSERT INTO faculty_subject
-                (
-                    faculty_id,
-                    subject_id
-                )
-            VALUES
-                (
-                    %s,
-                    %s
-                )
-            """,
-            (
-                faculty_id,
-                subject_id,
-            ),
+    # A faculty may cover Theory + Lab for the same subject, but may not
+    # cover another subject in the same semester and academic year.
+    conflict = row(
+        """
+        SELECT s.subject_code
+        FROM faculty_subject_assignment_detail a
+        JOIN subject s ON s.subject_id = a.subject_id
+        WHERE a.faculty_id = %s
+          AND a.academic_year = %s
+          AND a.status = 'Active'
+          AND s.semester_id = %s
+          AND a.subject_id <> %s
+        LIMIT 1
+        """,
+        (faculty_id, academic_year, subject["semester_id"], subject_id),
+    )
+    if conflict:
+        return fail(
+            "Faculty is already assigned to another subject in this semester "
+            f"({conflict['subject_code']}).",
+            409,
         )
 
     # --------------------------------------------------------
@@ -1569,6 +1601,20 @@ def create_assignment():
             subject_id,
             academic_year,
         ),
+    )
+
+    # Keep the component source of truth synchronized for older callers.
+    execute(
+        """
+        INSERT INTO faculty_subject_assignment_detail
+            (subject_id, faculty_id, academic_year, component, assignment_role, status)
+        VALUES (%s, %s, %s, 'Theory', 'Main', 'Active')
+        ON DUPLICATE KEY UPDATE
+            faculty_id = VALUES(faculty_id),
+            status = 'Active',
+            updated_at = NOW()
+        """,
+        (subject_id, faculty_id, academic_year),
     )
 
     audit(
