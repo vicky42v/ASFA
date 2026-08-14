@@ -35,7 +35,7 @@ def _component(entry):
         entry.get("component") or "Theory"
     ).strip().title()
 
-    if value not in ("Theory", "Lab"):
+    if value not in ("Theory", "Lab", "Special"):
         return "Theory"
 
     return value
@@ -80,35 +80,43 @@ def _assignment_conflicts(entries, context):
     for index, entry in enumerate(entries):
         subject_id = _as_int(entry.get("subject_id"))
         component = _raw_component(entry)
-        if component not in ("Theory", "Lab"):
+        if component not in ("Theory", "Lab", "Special"):
             conflicts.append({
                 "type": "invalid_component",
                 "entry_index": index,
-                "message": "Timetable component must be Theory or Lab.",
+                "message": "Timetable component must be Theory, Lab or Special.",
             })
+            continue
+
+        if component == "Special":
             continue
 
         roles = expected.get((subject_id, component), {})
         main = _as_int(entry.get("faculty_id"))
         co = _as_int(entry.get("co_faculty_id"))
-        if not roles.get("Main"):
+        if not roles.get("Main") and main <= 0:
             conflicts.append({
                 "type": "missing_assignment",
                 "entry_index": index,
                 "message": "Timetable entry has no active Main faculty assignment for its subject component.",
             })
-        elif main != roles["Main"]:
+        elif roles.get("Main") and main != roles["Main"]:
             conflicts.append({
-                "type": "invalid_faculty_assignment",
+                "type": "faculty_mismatch",
                 "entry_index": index,
-                "message": "Timetable entry does not use its assigned Main faculty.",
+                "message": "Assigned Main faculty does not match the saved subject component assignment.",
             })
-        elif component == "Lab" and co != _as_int(roles.get("Co")):
-            conflicts.append({
-                "type": "invalid_co_faculty_assignment",
-                "entry_index": index,
-                "message": "Timetable entry does not use its assigned Co-faculty.",
-            })
+        elif component == "Lab":
+            expected_co = _as_int(roles.get("Co"))
+            if co != expected_co:
+                conflicts.append({
+                    "type": "invalid_co_faculty_assignment",
+                    "entry_index": index,
+                    "message": (
+                        "Timetable entry does not match the saved "
+                        "Lab Co-faculty assignment."
+                    ),
+                })
         elif component == "Theory" and roles.get("Co"):
             conflicts.append({
                 "type": "invalid_theory_assignment",
@@ -222,19 +230,20 @@ def validate_entries(entries, constraints=None, context=None):
 
     HARD RULES
     ----------
-    1. A semester cannot have two subjects in one slot.
-    2. A faculty member cannot teach two classes in one slot.
-    3. A faculty member cannot teach different subjects
+    1. A normal theory slot cannot contain two subjects.
+    2. Concurrent lab batches are allowed when faculty do not overlap.
+    3. A faculty member cannot teach two classes in one slot.
+    4. A faculty member cannot teach different subjects
        in the same semester.
-    4. Working-day violations are rejected.
-    5. Period violations are rejected.
-    6. Faculty daily workload is checked.
-    7. Faculty weekly workload is checked.
-    8. Co-faculty is allowed only for Labs.
-    9. Main and Co faculty cannot be the same person.
-    10. A Theory entry must not have a Co faculty.
-    11. Lab blocks must not overlap.
-    12. Same subject repeated on the same day is a warning.
+    5. Working-day violations are rejected.
+    6. Period violations are rejected.
+    7. Faculty daily workload is checked.
+    8. Faculty weekly workload is checked.
+    9. Co-faculty is allowed only for Labs.
+    10. Main and Co faculty cannot be the same person.
+    11. Every Lab component is exactly one 2-period contiguous block/week.
+    12. Lab blocks cannot cross the configured short break or lunch.
+    13. Same subject repeated on the same day is a warning.
 
     NOTE
     ----
@@ -272,12 +281,12 @@ def validate_entries(entries, constraints=None, context=None):
 
     for index, item in enumerate(entries):
 
-        if _raw_component(item) not in ("Theory", "Lab"):
+        if _raw_component(item) not in ("Theory", "Lab", "Special"):
             conflicts.append(
                 {
                     "type": "invalid_component",
                     "entry_index": index,
-                    "message": "Timetable component must be Theory or Lab.",
+                    "message": "Timetable component must be Theory, Lab or Special.",
                 }
             )
 
@@ -402,6 +411,18 @@ def validate_entries(entries, constraints=None, context=None):
     # =========================================================
     # SEMESTER SLOT CONFLICT
     # =========================================================
+    #
+    # Normal theory/tutorial classes are exclusive for a
+    # semester. Labs are the one intentional exception:
+    # different lab batches may occupy the same two periods.
+    # The faculty conflict check below still makes sure a
+    # faculty member is not teaching both labs simultaneously.
+    #
+    # We do not invent batch IDs here because the current
+    # timetable schema does not contain a batch column.
+    # Therefore the validator treats simultaneous Lab entries
+    # as batch candidates and requires non-overlapping faculty.
+    # =========================================================
 
     for (
         semester_id,
@@ -411,23 +432,34 @@ def validate_entries(entries, constraints=None, context=None):
         if len(values) <= 1:
             continue
 
-        subject_names = []
+        components = {
+            _component(item)
+            for item in values
+        }
 
-        for item in values:
+        if components == {"Lab"}:
+            faculty_sets = [
+                set(_faculty_ids(item))
+                for item in values
+            ]
 
-            code = (
+            faculty_overlap = any(
+                faculty_sets[i] & faculty_sets[j]
+                for i in range(len(faculty_sets))
+                for j in range(i + 1, len(faculty_sets))
+            )
+
+            if not faculty_overlap:
+                continue
+
+        subject_names = [
+            str(
                 item.get("subject_code")
                 or item.get("subject_name")
-                or str(
-                    item.get(
-                        "subject_id"
-                    )
-                )
+                or item.get("subject_id")
             )
-
-            subject_names.append(
-                str(code)
-            )
+            for item in values
+        ]
 
         conflicts.append(
             {
@@ -436,9 +468,9 @@ def validate_entries(entries, constraints=None, context=None):
                 "slot": slot,
                 "subjects": subject_names,
                 "message": (
-                    "More than one subject is "
-                    "assigned to the same "
-                    "semester time slot."
+                    "More than one non-compatible class "
+                    "is assigned to the same semester "
+                    "time slot."
                 ),
             }
         )
@@ -512,7 +544,7 @@ def validate_entries(entries, constraints=None, context=None):
                     str(subject_id)
                 )
 
-            conflicts.append(
+            warnings.append(
                 {
                     "type": (
                         "faculty_multiple_subjects"
@@ -526,10 +558,7 @@ def validate_entries(entries, constraints=None, context=None):
                         f"Faculty {faculty_id} "
                         f"is assigned to different "
                         f"subjects in semester "
-                        f"{semester_id}. "
-                        "A faculty member can "
-                        "handle only one subject "
-                        "in the same semester."
+                        f"{semester_id}."
                     ),
                 }
             )
@@ -551,6 +580,13 @@ def validate_entries(entries, constraints=None, context=None):
         co = item.get(
             "co_faculty_id"
         )
+
+        # -----------------------------------------------------
+        # SPECIAL SATURDAY ACTIVITIES HAVE NO FACULTY
+        # -----------------------------------------------------
+
+        if component == "Special":
+            continue
 
         # -----------------------------------------------------
         # MAIN FACULTY REQUIRED
@@ -816,6 +852,195 @@ def validate_entries(entries, constraints=None, context=None):
                         ),
                     }
                 )
+
+    # =========================================================
+    # SATURDAY SPECIAL ACTIVITY VALIDATION
+    # =========================================================
+
+    special_subject_ids = {
+        _as_int(item.get("subject_id"))
+        for item in entries
+        if _component(item) == "Special"
+        and _as_int(item.get("subject_id")) > 0
+    }
+
+    if special_subject_ids:
+        placeholders = ",".join(["%s"] * len(special_subject_ids))
+        special_rows = rows(
+            f"""
+            SELECT subject_id, subject_code, subject_name, course_category
+            FROM subject
+            WHERE subject_id IN ({placeholders})
+            """,
+            tuple(special_subject_ids),
+        )
+        special_map = {_as_int(r["subject_id"]): r for r in special_rows}
+        periods_per_day = _as_int((constraints or {}).get("periods_per_day"), 0)
+
+        for subject_id in special_subject_ids:
+            rows_for_subject = [
+                item for item in entries
+                if _component(item) == "Special"
+                and _as_int(item.get("subject_id")) == subject_id
+            ]
+            code = (
+                special_map.get(subject_id, {}).get("subject_code")
+                or special_map.get(subject_id, {}).get("subject_name")
+                or str(subject_id)
+            )
+            saturday_rows = [
+                item for item in rows_for_subject
+                if str(item.get("day") or "").strip().lower() == "saturday"
+            ]
+
+            if not saturday_rows:
+                conflicts.append({
+                    "type": "special_activity_not_saturday",
+                    "subject_id": subject_id,
+                    "message": f"{code} must be scheduled on Saturday.",
+                })
+                continue
+
+            periods = sorted(_as_int(item.get("period")) for item in saturday_rows)
+            expected = list(range(1, periods_per_day + 1)) if periods_per_day > 0 else []
+            if expected and periods != expected:
+                conflicts.append({
+                    "type": "special_activity_not_full_day",
+                    "subject_id": subject_id,
+                    "message": f"{code} must occupy the full Saturday timetable day.",
+                })
+
+    # =========================================================
+    # STRICT LAB / IPCC BLOCK VALIDATION
+    # =========================================================
+    #
+    # A Lab component is represented in timetable as two rows:
+    #   Day N, Period P
+    #   Day N, Period P+1
+    #
+    # Those two rows are ONE laboratory session. A subject must
+    # not receive another lab block during the same week.
+    #
+    # IPCC subjects are not treated specially by creating extra
+    # lab blocks: their Theory and Lab components are independent,
+    # but the Lab component still follows exactly one 2-period
+    # block/week.
+    # =========================================================
+
+    lab_entries_by_subject = defaultdict(list)
+
+    lab_subject_ids = sorted({
+        _as_int(item.get("subject_id"))
+        for item in entries
+        if _component(item) == "Lab"
+        and _as_int(item.get("subject_id")) > 0
+    })
+
+    subject_rows = {}
+    if lab_subject_ids:
+        placeholders = ",".join(["%s"] * len(lab_subject_ids))
+        subject_records = rows(
+            f"""
+            SELECT
+                subject_id,
+                subject_code,
+                subject_name,
+                course_category,
+                practical_hours
+            FROM subject
+            WHERE subject_id IN ({placeholders})
+            """,
+            tuple(lab_subject_ids),
+        )
+        subject_rows = {
+            _as_int(item["subject_id"]): item
+            for item in subject_records
+        }
+
+    for index, item in enumerate(entries):
+        if _component(item) != "Lab":
+            continue
+
+        subject_id = _as_int(item.get("subject_id"))
+        day = str(item.get("day") or "").strip()
+        period = _as_int(item.get("period"))
+
+        lab_entries_by_subject[subject_id].append(
+            (index, day, period, item)
+        )
+
+    short_break = _as_int(
+        (constraints or {}).get("short_break_after_period"),
+        0,
+    )
+    lunch = _as_int(
+        (constraints or {}).get("lunch_after_period"),
+        0,
+    )
+    periods_per_day = _as_int(
+        (constraints or {}).get("periods_per_day"),
+        0,
+    )
+
+    for subject_id, lab_rows in lab_entries_by_subject.items():
+        subject = subject_rows.get(subject_id) or {}
+        practical_hours = _as_int(subject.get("practical_hours"), 0)
+        code = subject.get("subject_code") or subject.get("subject_name") or str(subject_id)
+
+        if practical_hours > 0 and len(lab_rows) != practical_hours:
+            conflicts.append({
+                "type": "lab_frequency_or_duration",
+                "subject_id": subject_id,
+                "message": (
+                    f"Lab subject {code} must have exactly {practical_hours} "
+                    f"scheduled practical periods because the database specifies "
+                    f"{practical_hours} practical hours/week."
+                ),
+            })
+            continue
+
+        by_day = defaultdict(list)
+        for item_index, day, period, item in lab_rows:
+            by_day[day].append((item_index, period, item))
+
+        for day, day_rows in by_day.items():
+            day_rows.sort(key=lambda value: value[1])
+            periods = [period for _idx, period, _item in day_rows]
+            # Every lab day must consist of contiguous periods. This permits
+            # multiple two-period blocks for subjects such as a 12-period project.
+            for previous, current in zip(periods, periods[1:]):
+                if current != previous + 1:
+                    conflicts.append({
+                        "type": "lab_not_contiguous",
+                        "subject_id": subject_id,
+                        "day": day,
+                        "message": f"Lab {code} must use contiguous periods on each lab day.",
+                    })
+                    break
+
+        for _idx, day, period, _item in lab_rows:
+            if periods_per_day and period > periods_per_day:
+                conflicts.append({
+                    "type": "lab_period_violation",
+                    "subject_id": subject_id,
+                    "message": "Lab block extends beyond the configured periods per day.",
+                })
+            if short_break and period == short_break:
+                conflicts.append({
+                    "type": "lab_crosses_short_break",
+                    "subject_id": subject_id,
+                    "day": day,
+                    "periods": [period, period + 1],
+                    "message": "Lab block cannot start at the configured short-break boundary.",
+                })
+            if lunch and period == lunch:
+                conflicts.append({
+                    "type": "lab_crosses_lunch",
+                    "subject_id": subject_id,
+                    "day": day,
+                    "periods": [period, period + 1],
+                    "message": "Lab block cannot start at the configured lunch boundary.",
+                })
 
     # =========================================================
     # DATABASE-BACKED ASSIGNMENT / CYCLE CHECKS

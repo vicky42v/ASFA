@@ -1,6 +1,6 @@
 from flask import Blueprint, request
 
-from backend.db import row, rows, execute
+from backend.db import row, rows, connection
 from backend.utils.http import ok, fail, require_auth
 from backend.services.timetable_service import generate
 from backend.services.timetable_validator import validate_entries
@@ -169,6 +169,100 @@ def _validate_semester_context(context):
 # CONSTRAINT HELPER
 # ============================================================
 
+def _verify_generated_faculty_assignments(entries, context):
+    """
+    Final guard between faculty assignment and timetable generation.
+
+    The timetable generator must use the faculty currently stored in
+    faculty_subject_assignment. If an old/default faculty somehow reaches
+    the generated output, reject the proposal instead of showing it.
+    """
+    if not entries:
+        return {"valid": True, "errors": []}
+
+    subject_ids = sorted({
+        int(item["subject_id"])
+        for item in entries
+        if item.get("subject_id") is not None
+    })
+
+    if not subject_ids:
+        return {"valid": True, "errors": []}
+
+    placeholders = ", ".join(["%s"] * len(subject_ids))
+
+    assignments = rows(
+        f"""
+        SELECT
+            a.subject_id,
+            a.faculty_id,
+            f.faculty_name
+        FROM faculty_subject_assignment a
+        JOIN faculty f
+          ON f.faculty_id = a.faculty_id
+        JOIN subject s
+          ON s.subject_id = a.subject_id
+        WHERE a.academic_year = %s
+          AND a.status = 'Active'
+          AND s.department_id = %s
+          AND s.scheme_id = %s
+          AND s.semester_id = %s
+          AND a.subject_id IN ({placeholders})
+        ORDER BY a.assignment_id DESC
+        """,
+        (
+            context["academic_year"],
+            context["department_id"],
+            context["scheme_id"],
+            context["semester_id"],
+            *subject_ids,
+        ),
+    )
+
+    expected = {}
+    for item in assignments:
+        sid = int(item["subject_id"])
+        if sid not in expected:
+            expected[sid] = {
+                "faculty_id": int(item["faculty_id"]),
+                "faculty_name": item.get("faculty_name"),
+            }
+
+    errors = []
+
+    for item in entries:
+        sid = int(item["subject_id"])
+        generated_faculty = item.get("faculty_id")
+
+        if sid not in expected:
+            errors.append(
+                f"{item.get('subject_code', sid)} has no active faculty assignment."
+            )
+            continue
+
+        if generated_faculty is None:
+            errors.append(
+                f"{item.get('subject_code', sid)} has no faculty in the generated timetable."
+            )
+            continue
+
+        if int(generated_faculty) != expected[sid]["faculty_id"]:
+            errors.append(
+                f"{item.get('subject_code', sid)} was generated with "
+                f"{item.get('faculty_name') or generated_faculty}, but the active "
+                f"assignment is {expected[sid]['faculty_name']}."
+            )
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+    }
+
+
+# ============================================================
+# CONSTRAINT HELPER
+# ============================================================
+
 def _get_constraint(context):
 
     exact = row(
@@ -195,26 +289,11 @@ def _get_constraint(context):
     if exact:
         return exact
 
-    fallback = row(
-        """
-        SELECT *
-        FROM timetable_constraints
-        WHERE department_id = %s
-          AND academic_year = %s
-          AND semester_type = %s
-          AND semester_id = %s
-        ORDER BY constraint_id DESC
-        LIMIT 1
-        """,
-        (
-            context["department_id"],
-            context["academic_year"],
-            context["semester_type"],
-            context["semester_id"],
-        ),
-    )
+    # The selected timetable context must have an exact constraint
+    # record. Never borrow another department/semester's rules and
+    # never invent fallback values.
+    return None
 
-    return fallback
 
 
 # ============================================================
@@ -336,7 +415,7 @@ def generate_timetable():
 
     if not constraint:
         return fail(
-            "No timetable rules are configured for the selected department, academic year and semester.",
+            "No exact timetable_constraints record exists for the selected department, scheme, academic year, semester type and semester. Configure the real database rule before generating.",
             422,
         )
 
@@ -344,9 +423,16 @@ def generate_timetable():
         # Pass number_of_outputs from payload to context for alternative generation
         number_of_outputs = payload.get(
             "number_of_outputs",
-            payload.get("number_of_alternatives", 1),
+            payload.get(
+                "numberOfOutputs",
+                payload.get("number_of_alternatives", payload.get("numberOfAlternatives", 1)),
+            ),
         )
         context["number_of_outputs"] = number_of_outputs
+        context["generation_seed"] = payload.get(
+            "generation_seed",
+            payload.get("generationSeed"),
+        )
 
         result = generate(context)
 
@@ -423,6 +509,36 @@ def generate_timetable():
         [],
     )
 
+    assignment_guard = _verify_generated_faculty_assignments(
+        generated_entries,
+        context,
+    )
+
+    if not assignment_guard.get("valid"):
+        message = "Generated timetable does not match the current faculty assignments: " + " ".join(
+            assignment_guard.get("errors", [])
+        )
+
+        notify(
+            "Timetable generation needs attention",
+            message,
+            "warning",
+        )
+
+        return fail(
+            message,
+            422,
+            validation={
+                "valid": False,
+                "errors": assignment_guard.get("errors", []),
+                "conflicts": [],
+            },
+            timetable=generated_entries,
+            conflicts=[],
+            warnings=[],
+            summary=result.get("summary", {}),
+        )
+
     validation = validate_entries(
         generated_entries,
         constraint,
@@ -460,6 +576,38 @@ def generate_timetable():
             ),
         )
 
+    # Validate every alternative against the same real database
+    # constraints before exposing it to the frontend.
+    validated_alternatives = []
+
+    for alternative in result.get("alternatives", []) or []:
+        if not isinstance(alternative, dict):
+            continue
+
+        alternative_entries = alternative.get("timetable", []) or []
+        alternative_validation = validate_entries(
+            alternative_entries,
+            constraint,
+            context,
+        )
+
+        if not alternative_validation.get("valid"):
+            continue
+
+        alternative = dict(alternative)
+        alternative["validation"] = alternative_validation
+        alternative["conflicts"] = alternative_validation.get(
+            "conflicts", []
+        )
+        alternative["warnings"] = alternative_validation.get(
+            "warnings", []
+        )
+        alternative["summary"] = (
+            alternative.get("summary")
+            or alternative_validation.get("summary", {})
+        )
+        validated_alternatives.append(alternative)
+
     audit(
         "Generated Timetable Proposal",
         "Timetables",
@@ -476,10 +624,7 @@ def generate_timetable():
         {
             "context": context,
             "timetable": generated_entries,
-            "alternatives": result.get(
-                "alternatives",
-                [],
-            ),
+            "alternatives": validated_alternatives,
             "validation": validation,
             "conflicts": validation.get(
                 "conflicts",
@@ -671,82 +816,24 @@ def save():
                         f"Entry {index + 1} does not belong to the selected timetable context."
                     )
 
+        item_cycle = item.get("cycle")
+
         if context.get("cycle") in ("P", "C"):
-
-            item_cycle = item.get("cycle")
-
-            if (
-                item_cycle not in (None, "")
-                and str(item_cycle).upper()
-                != context["cycle"]
-            ):
+            if str(item_cycle or "").strip().upper() != context["cycle"]:
                 return fail(
-                    f"Entry {index + 1} belongs to a different cycle."
+                    f"Entry {index + 1} must belong to {context['cycle']} Cycle."
                 )
-
-    # --------------------------------------------------------
-    # Existing timetable
-    # --------------------------------------------------------
-
-    if context.get("cycle") in ("P", "C"):
-
-        existing = row(
-            """
-            SELECT COUNT(*) AS count
-            FROM timetable
-            WHERE department_id = %s
-              AND scheme_id = %s
-              AND academic_year = %s
-              AND semester_type = %s
-              AND semester_id = %s
-              AND cycle = %s
-            """,
-            (
-                context["department_id"],
-                context["scheme_id"],
-                context["academic_year"],
-                context["semester_type"],
-                context["semester_id"],
-                context["cycle"],
-            ),
-        )
-
-    else:
-
-        existing = row(
-            """
-            SELECT COUNT(*) AS count
-            FROM timetable
-            WHERE department_id = %s
-              AND scheme_id = %s
-              AND academic_year = %s
-              AND semester_type = %s
-              AND semester_id = %s
-              AND cycle IS NULL
-            """,
-            (
-                context["department_id"],
-                context["scheme_id"],
-                context["academic_year"],
-                context["semester_type"],
-                context["semester_id"],
-            ),
-        )
-
-    if existing and int(
-        existing.get("count", 0)
-    ) > 0:
-
-        return fail(
-            "A timetable already exists for this exact academic grouping and cycle. Existing records were preserved.",
-            409,
-        )
+        else:
+            if item_cycle not in (None, ""):
+                return fail(
+                    f"Entry {index + 1} must not contain a P/C cycle for Semester 3-8."
+                )
 
     constraint = _get_constraint(context)
 
     if not constraint:
         return fail(
-            "No timetable rules are configured for this academic grouping.",
+            "No exact timetable_constraints record exists for the selected academic grouping. Configure the real database rule before saving.",
             422,
         )
 
@@ -777,61 +864,92 @@ def save():
         )
 
     # --------------------------------------------------------
-    # SAVE
+    # TRANSACTIONAL SAVE (DELETE PREVIOUS + INSERT NEW)
     # --------------------------------------------------------
 
     saved = 0
 
-    for item in entries:
+    with connection() as conn:
+        cursor = conn.cursor()
 
-        execute(
-            """
-            INSERT INTO timetable (
-                department_id,
-                scheme_id,
-                academic_year,
-                semester_type,
-                semester_id,
-                cycle,
-                day,
-                period,
-                subject_id,
-                faculty_id,
-                co_faculty_id,
-                component
+        if context.get("cycle") in ("P", "C"):
+            cursor.execute(
+                """
+                DELETE FROM timetable
+                WHERE department_id = %s
+                  AND scheme_id = %s
+                  AND academic_year = %s
+                  AND semester_type = %s
+                  AND semester_id = %s
+                  AND cycle = %s
+                """,
+                (
+                    context["department_id"],
+                    context["scheme_id"],
+                    context["academic_year"],
+                    context["semester_type"],
+                    context["semester_id"],
+                    context["cycle"],
+                ),
             )
-            VALUES (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s
+        else:
+            cursor.execute(
+                """
+                DELETE FROM timetable
+                WHERE department_id = %s
+                  AND scheme_id = %s
+                  AND academic_year = %s
+                  AND semester_type = %s
+                  AND semester_id = %s
+                  AND cycle IS NULL
+                """,
+                (
+                    context["department_id"],
+                    context["scheme_id"],
+                    context["academic_year"],
+                    context["semester_type"],
+                    context["semester_id"],
+                ),
             )
-            """,
-            (
-                context["department_id"],
-                context["scheme_id"],
-                context["academic_year"],
-                context["semester_type"],
-                context["semester_id"],
-                context.get("cycle"),
-                item.get("day"),
-                item.get("period"),
-                item.get("subject_id"),
-                item.get("faculty_id"),
-                item.get("co_faculty_id"),
-                item.get("component", "Theory"),
-            ),
-        )
 
-        saved += 1
+        for item in entries:
+            cursor.execute(
+                """
+                INSERT INTO timetable (
+                    department_id,
+                    scheme_id,
+                    academic_year,
+                    semester_type,
+                    semester_id,
+                    cycle,
+                    day,
+                    period,
+                    subject_id,
+                    faculty_id,
+                    co_faculty_id,
+                    component
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    context["department_id"],
+                    context["scheme_id"],
+                    context["academic_year"],
+                    context["semester_type"],
+                    context["semester_id"],
+                    context.get("cycle"),
+                    item.get("day"),
+                    item.get("period"),
+                    item.get("subject_id"),
+                    item.get("faculty_id"),
+                    item.get("co_faculty_id"),
+                    item.get("component", "Theory"),
+                ),
+            )
+
+            saved += 1
 
     audit(
         "Saved Timetable",

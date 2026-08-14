@@ -196,15 +196,22 @@ def _get_constraints(context):
     if fallback:
         return fallback
 
-    return {
-        "working_days": (
-            "Monday,Tuesday,Wednesday,"
-            "Thursday,Friday,Saturday"
-        ),
-        "periods_per_day": 7,
-        "max_periods_per_day": 4,
-        "max_periods_per_week": 20,
-    }
+    dept_fallback = row(
+        """
+        SELECT *
+        FROM timetable_constraints
+        WHERE department_id = %s
+        ORDER BY constraint_id DESC
+        LIMIT 1
+        """,
+        (context["department_id"],),
+    )
+    if dept_fallback:
+        return dept_fallback
+
+    # The database is the sole source of truth. Do not invent
+    # timetable constraints when the selected context has none.
+    return None
 
 
 # ============================================================
@@ -298,34 +305,32 @@ def _get_subjects(context):
 
 def _component_names(subject):
     """
-    Determine which teaching components a subject contains.
+    Determine the actual teaching components from the subject record.
 
-    IPCC subjects:
-        Only subjects with course_category == 'IPCC' receive the special Theory + Lab split.
-
-    Non-IPCC subjects:
-        Standard theory courses or lab courses (if lecture_hours == 0 and practical_hours > 0).
+    Rules:
+      - Theory/tutorial hours create Theory component(s).
+      - Any practical_hours > 0 creates a Lab component.
+      - IPCC therefore naturally becomes Theory + Lab.
+      - A practical component is never converted into theory.
     """
-    category = str(subject.get("course_category") or "").strip().upper()
     theory = (
         _safe_int(subject.get("lecture_hours"))
         + _safe_int(subject.get("tutorial_hours"))
     )
     practical = _safe_int(subject.get("practical_hours"))
 
-    if category == "IPCC":
-        components = []
-        if theory > 0:
-            components.append("Theory")
-        if practical > 0:
-            components.append("Lab")
-        return components if components else ["Theory"]
+    components = []
 
-    if theory == 0 and practical > 0:
-        return ["Lab"]
+    if theory > 0:
+        components.append("Theory")
 
-    return ["Theory"]
+    if practical > 0:
+        components.append("Lab")
 
+    if not components:
+        components.append("Theory")
+
+    return components
 
 # ============================================================
 # FACULTY ASSIGNMENTS
@@ -333,20 +338,21 @@ def _component_names(subject):
 
 def _get_assignments(context):
     """
-    Get Main / Co faculty assignments.
+    Load ONLY real component-level assignments from MySQL.
 
-    The newer detailed assignment table is the source of truth.
+    faculty_subject_assignment_detail is the source of truth for
+    Theory/Lab + Main/Co. No faculty is invented or automatically
+    assigned by the generator.
     """
-
     return rows(
         """
         SELECT
-            a.detail_id,
-            a.subject_id,
-            a.faculty_id,
-            a.component,
-            a.assignment_role,
-            a.academic_year,
+            d.detail_id,
+            d.subject_id,
+            d.faculty_id,
+            d.component,
+            d.assignment_role,
+            d.academic_year,
 
             f.faculty_name,
             f.max_workload,
@@ -358,27 +364,24 @@ def _get_assignments(context):
             s.subject_code,
             s.subject_name
 
-        FROM faculty_subject_assignment_detail a
-
+        FROM faculty_subject_assignment_detail d
         JOIN faculty f
-            ON f.faculty_id = a.faculty_id
-
+          ON f.faculty_id = d.faculty_id
         JOIN subject s
-            ON s.subject_id = a.subject_id
+          ON s.subject_id = d.subject_id
 
-        WHERE a.academic_year = %s
-          AND a.status = 'Active'
-          AND f.status = 'Active'
-
+        WHERE d.academic_year = %s
+          AND d.status = 'Active'
+          AND LOWER(COALESCE(f.status, 'Active')) = 'active'
           AND s.department_id = %s
           AND s.scheme_id = %s
           AND s.semester_id = %s
 
         ORDER BY
-            a.subject_id,
-            a.component,
-            a.assignment_role,
-            a.detail_id
+            d.subject_id,
+            d.component,
+            d.assignment_role,
+            d.detail_id
         """,
         (
             context["academic_year"],
@@ -388,65 +391,53 @@ def _get_assignments(context):
         ),
     )
 
-
 # ============================================================
 # OPTIONAL SUBJECT VALIDATION
 # ============================================================
 
 def _optional_validation(subjects, assignments):
-    """
-    Elective / Option groups:
-        Subjects sharing an option_group_id are alternatives.
-        Assignment existence is used to determine which subject is selected.
-    """
+    """Require exactly one selected subject for every PEC/OEC group."""
     groups = defaultdict(list)
     selected = defaultdict(set)
 
     for subject in subjects:
         category = str(subject.get("course_category") or "").strip().upper()
         group_id = subject.get("option_group_id")
-
-        if group_id not in (None, "") or (_truthy(subject.get("is_optional")) and category in ("PEC", "OEC")):
+        if (
+            group_id not in (None, "")
+            or (_truthy(subject.get("is_optional")) and category in ("PEC", "OEC"))
+        ):
             key_id = str(group_id) if group_id not in (None, "") else f"opt_{subject['subject_id']}"
             groups[(category or "ELECTIVE", key_id)].append(subject)
 
     for assignment in assignments:
-        selected[int(assignment["subject_id"])].add(assignment["component"])
+        try:
+            selected[int(assignment["subject_id"])].add(
+                str(assignment.get("component") or "").strip().title()
+            )
+        except (TypeError, ValueError, KeyError):
+            continue
 
     errors = []
     info = []
-
     for key, group_subjects in groups.items():
-        chosen = [
-            subject
-            for subject in group_subjects
-            if int(subject["subject_id"]) in selected
-        ]
-
-        if not chosen:
-            errors.append(
-                f"Option group {key[1]} ({key[0]}) "
-                "has no selected subject. "
-                "Select one subject before generation."
-            )
-
+        chosen = [s for s in group_subjects if int(s["subject_id"]) in selected]
+        if len(chosen) == 0:
+            errors.append(f"{key[0]} option group {key[1]} requires exactly one selected subject.")
+        elif len(chosen) > 1:
+            codes = ", ".join(str(s.get("subject_code") or s.get("subject_id")) for s in chosen)
+            errors.append(f"{key[0]} option group {key[1]} has multiple selected subjects: {codes}. Select exactly one.")
         info.append({
             "category": key[0],
             "option_group_id": key[1],
             "selected_subjects": [
-                {
-                    "subject_id": subject["subject_id"],
-                    "subject_code": subject["subject_code"],
-                }
-                for subject in chosen
+                {"subject_id": s["subject_id"], "subject_code": s["subject_code"]}
+                for s in chosen
             ],
+            "required_selection_count": 1,
         })
 
-    return {
-        "valid": not errors,
-        "errors": errors,
-        "groups": info,
-    }
+    return {"valid": not errors, "errors": errors, "groups": info}
 
 
 # ============================================================
@@ -530,133 +521,73 @@ def _assignment_map(assignments):
     return result
 
 
+def _is_special_activity(subject):
+    """Identify curriculum activities that must occupy Saturday."""
+    text = " ".join(
+        str(subject.get(key) or "")
+        for key in ("subject_code", "subject_name", "course_category", "group_name")
+    ).strip().lower()
+    return any(token in text for token in ("sports", "yoga", "nss", "ncc"))
+
+
 # ============================================================
 # ASSIGNMENT VALIDATION
 # ============================================================
 
 def _assignment_validation(subjects, amap):
     """
-    Rules:
-
-    1. Every component requires Main faculty.
-    2. Theory cannot have Co faculty.
-    3. Lab may have Main + optional Co.
-    4. Main and Co cannot be the same person.
-    5. A faculty member can handle only ONE SUBJECT
-       within the selected semester.
+    Every required component must have a real Main faculty assignment.
+    Lab Co-faculty is optional. Theory Co-faculty is invalid.
     """
-
     errors = []
-
-    faculty_subjects = defaultdict(set)
 
     for subject in subjects:
         sid = int(subject["subject_id"])
-        components = _component_names(subject)
 
-        for component in components:
+        if _is_special_activity(subject):
+            continue
+
+        for component in _component_names(subject):
             roles = amap.get(sid, {}).get(component, {})
             main = roles.get("Main")
             co = roles.get("Co")
 
-            # Fallback for Lab component if not explicitly created in FSAD
-            if not main and component == "Lab":
-                main = amap.get(sid, {}).get("Theory", {}).get("Main")
-
             if not main:
                 errors.append(
                     f"{subject['subject_code']} - "
-                    f"{subject['subject_name']} "
-                    f"is missing a Main faculty "
-                    f"for {component}."
+                    f"{subject['subject_name']} is missing a Main faculty "
+                    f"assignment for {component}."
                 )
                 continue
 
             main_id = int(main["faculty_id"])
-            faculty_subjects[main_id].add(sid)
 
             if co:
                 if component != "Lab":
                     errors.append(
-                        f"Co-faculty is not allowed "
-                        f"for Theory: "
+                        f"Co-faculty is not allowed for Theory: "
                         f"{subject['subject_code']}."
                     )
-                else:
-                    co_id = int(co["faculty_id"])
-                    if co_id == main_id:
-                        errors.append(
-                            f"{subject['subject_code']} "
-                            "cannot use the same person "
-                            "as Main and Co-faculty."
-                        )
-                    else:
-                        faculty_subjects[co_id].add(sid)
-
-    # --------------------------------------------------------
-    # ONE SUBJECT PER FACULTY IN SELECTED SEMESTER
-    # --------------------------------------------------------
-
-    for faculty_id, subject_ids in faculty_subjects.items():
-        if len(subject_ids) <= 1:
-            continue
-
-        placeholders = ",".join(["%s"] * len(subject_ids))
-        codes = rows(
-            f"""
-            SELECT subject_code
-            FROM subject
-            WHERE subject_id IN ({placeholders})
-            ORDER BY subject_code
-            """,
-            tuple(subject_ids),
-        )
-
-        names = ", ".join(item["subject_code"] for item in codes)
-        faculty = row(
-            """
-            SELECT faculty_name
-            FROM faculty
-            WHERE faculty_id = %s
-            """,
-            (faculty_id,),
-        )
-
-        faculty_name = (
-            faculty["faculty_name"]
-            if faculty
-            else f"Faculty ID {faculty_id}"
-        )
-
-        errors.append(
-            f"{faculty_name} is assigned to different "
-            f"subjects in the same semester ({names}). "
-            "One faculty member can handle only one "
-            "subject in a semester."
-        )
+                elif int(co["faculty_id"]) == main_id:
+                    errors.append(
+                        f"{subject['subject_code']} cannot use the same "
+                        "faculty member as Main and Co-faculty."
+                    )
 
     return {
         "valid": not errors,
         "errors": errors,
     }
 
-
 # ============================================================
 # CREATE TIMETABLE TASKS
 # ============================================================
 
-def _make_tasks(subjects, amap):
-    """
-    Convert subject workload into scheduling tasks.
-
-    Theory:
-        Every lecture/tutorial hour becomes one slot.
-
-    Lab:
-        Practical hours become ONE consecutive block.
-    """
-
+def _make_tasks(subjects, amap, days=None, periods_per_day=7):
+    """Create solver tasks from the actual database L-T-P workload."""
     tasks = []
+    days = list(days or [])
+    saturday = next((d for d in days if str(d).strip().lower() == "saturday"), None)
 
     for subject in subjects:
         sid = int(subject["subject_id"])
@@ -664,18 +595,26 @@ def _make_tasks(subjects, amap):
         tutorial = _safe_int(subject.get("tutorial_hours"))
         practical = _safe_int(subject.get("practical_hours"))
 
-        components = _component_names(subject)
+        if _is_special_activity(subject):
+            if saturday and periods_per_day > 0:
+                tasks.append({
+                    "subject": subject,
+                    "component": "Special",
+                    "ordinal": 0,
+                    "block_size": periods_per_day,
+                    "faculty_ids": [],
+                    "is_lab": False,
+                    "is_special": True,
+                    "fixed_day": saturday,
+                    "fixed_start": 1,
+                })
+            continue
 
-        # ----------------------------------------------------
-        # THEORY
-        # ----------------------------------------------------
+        components = _component_names(subject)
         if "Theory" in components:
             theory_hours = lecture + tutorial
-            if theory_hours == 0:
-                theory_hours = 3  # safe default
-
             theory_main = amap.get(sid, {}).get("Theory", {}).get("Main")
-            if theory_main:
+            if theory_hours > 0 and theory_main:
                 for ordinal in range(theory_hours):
                     tasks.append({
                         "subject": subject,
@@ -683,29 +622,32 @@ def _make_tasks(subjects, amap):
                         "ordinal": ordinal,
                         "block_size": 1,
                         "faculty_ids": [int(theory_main["faculty_id"])],
+                        "is_lab": False,
                     })
 
-        # ----------------------------------------------------
-        # LAB
-        # ----------------------------------------------------
-        if "Lab" in components:
-            lab_hours = practical if practical > 0 else 2
+        if "Lab" in components and practical > 0:
             lab_roles = amap.get(sid, {}).get("Lab", {})
-            lab_main = lab_roles.get("Main") or amap.get(sid, {}).get("Theory", {}).get("Main")
-
+            lab_main = lab_roles.get("Main")
             if lab_main:
                 faculty_ids = [int(lab_main["faculty_id"])]
                 lab_co = lab_roles.get("Co")
-                if lab_co and int(lab_co["faculty_id"]) != int(lab_main["faculty_id"]):
+                if lab_co and int(lab_co["faculty_id"]) != faculty_ids[0]:
                     faculty_ids.append(int(lab_co["faculty_id"]))
 
-                tasks.append({
-                    "subject": subject,
-                    "component": "Lab",
-                    "ordinal": 0,
-                    "block_size": lab_hours,
-                    "faculty_ids": faculty_ids,
-                })
+                remaining = practical
+                ordinal = 0
+                while remaining > 0:
+                    block_size = 2 if remaining >= 2 else 1
+                    tasks.append({
+                        "subject": subject,
+                        "component": "Lab",
+                        "ordinal": ordinal,
+                        "block_size": block_size,
+                        "faculty_ids": faculty_ids,
+                        "is_lab": True,
+                    })
+                    remaining -= block_size
+                    ordinal += 1
 
     return tasks
 
@@ -752,17 +694,18 @@ def _start_periods(constraint, block_size):
             periods + 1,
         )
 
-    last_start = (
-        periods - block_size + 1
-    )
+    short_break = _safe_int(constraint.get("short_break_after_period"), 0)
+    lunch = _safe_int(constraint.get("lunch_after_period"), 0)
 
-    if last_start < 1:
-        return range(0)
+    valid_starts = []
+    for start in range(1, periods - block_size + 2):
+        end = start + block_size - 1
+        crosses_short_break = (short_break > 0 and start <= short_break and end > short_break)
+        crosses_lunch = (lunch > 0 and start <= lunch and end > lunch)
+        if not crosses_short_break and not crosses_lunch:
+            valid_starts.append(start)
 
-    return range(
-        1,
-        last_start + 1,
-    )
+    return valid_starts
 
 
 # ============================================================
@@ -1016,6 +959,12 @@ def generate(context):
         context
     )
 
+    if not constraint:
+        return _failure(
+            "No timetable constraints are configured in timetable_db "
+            "for the selected department, scheme, academic year and semester."
+        )
+
     # --------------------------------------------------------
     # SUBJECTS
     # --------------------------------------------------------
@@ -1108,41 +1057,33 @@ def generate(context):
         )
 
     # --------------------------------------------------------
-    # CREATE TASKS
-    # --------------------------------------------------------
-
-    tasks = _make_tasks(
-        subjects,
-        amap,
-    )
-
-    if not tasks:
-
-        return _failure(
-            "No timetable tasks could be created "
-            "from the selected subject assignments."
-        )
-
-    # --------------------------------------------------------
     # WORKING DAYS / PERIODS
     # --------------------------------------------------------
 
-    days = _days(
-        constraint
-    )
-
-    periods = _safe_int(
-        constraint.get(
-            "periods_per_day"
-        ),
-        7,
-    )
+    days = _days(constraint)
+    periods = _safe_int(constraint.get("periods_per_day"), 7)
 
     if not days or periods <= 0:
 
         return _failure(
             "Working days and periods per day "
             "must be configured."
+        )
+
+    # --------------------------------------------------------
+    # CREATE TASKS FROM CURRICULUM WORKLOAD
+    # --------------------------------------------------------
+
+    tasks = _make_tasks(
+        subjects,
+        amap,
+        days=days,
+        periods_per_day=periods,
+    )
+
+    if not tasks:
+        return _failure(
+            "No timetable tasks could be created from the selected subject assignments."
         )
 
     available = (
@@ -1203,6 +1144,7 @@ def generate(context):
 
     faculty_slot = defaultdict(list)
     class_slot = defaultdict(list)
+    lab_slot = defaultdict(list)
     subject_day = defaultdict(list)
 
     faculty_day = defaultdict(list)
@@ -1219,12 +1161,14 @@ def generate(context):
             task["block_size"]
         )
 
-        for day in days:
-
-            for start in _start_periods(
-                constraint,
-                block,
-            ):
+        candidate_days = [task.get("fixed_day")] if task.get("fixed_day") else days
+        for day in candidate_days:
+            candidate_starts = (
+                [int(task.get("fixed_start", 1))]
+                if task.get("fixed_start") is not None
+                else _start_periods(constraint, block)
+            )
+            for start in candidate_starts:
 
                 cells = [
                     (
@@ -1317,20 +1261,31 @@ def generate(context):
                     )
 
                 # ------------------------------------------------
-                # CLASS SLOT
+                # CLASS / STUDENT SLOT
+                #
+                # Normal theory occupies the single class slot.
+                # Labs are tracked separately so two different lab
+                # batches can run concurrently.
                 # ------------------------------------------------
 
                 for (
                     cell_day,
                     cell_period,
                 ) in cells:
-
                     class_slot[
                         (
                             cell_day,
                             cell_period,
                         )
                     ].append(var)
+
+                    if task.get("is_lab"):
+                        lab_slot[
+                            (
+                                cell_day,
+                                cell_period,
+                            )
+                        ].append(var)
 
                 # ------------------------------------------------
                 # SAME SUBJECT SAME DAY
@@ -1382,24 +1337,50 @@ def generate(context):
         )
 
     # ------------------------------------------------------------
-    # SAME SEMESTER CANNOT HAVE TWO SUBJECTS SAME SLOT
+    # STUDENT-CLASS CONFLICT
+    #
+    # Theory cannot overlap another class.
+    # A lab may overlap another lab because the timetable can have
+    # separate batches in the same 2-period block.
+    #
+    # Faculty conflicts are still enforced above for every lab Main/Co.
     # ------------------------------------------------------------
 
-    for variables in class_slot.values():
+    for slot, variables in class_slot.items():
+        theory_vars = []
+        lab_vars = []
 
-        model.AddAtMostOne(
-            variables
-        )
+        for var in variables:
+            # Recover whether this choice is a lab from the choice lists.
+            # This is safe because each var appears in exactly one choice.
+            for choices_ in choices.values():
+                for candidate_var, candidate_task, _d, _s in choices_:
+                    if candidate_var.Index() == var.Index():
+                        if candidate_task.get("is_lab"):
+                            lab_vars.append(var)
+                        else:
+                            theory_vars.append(var)
+                        break
+                else:
+                    continue
+                break
+
+        # Any theory class blocks every other class in the slot.
+        if theory_vars:
+            model.AddAtMostOne(variables)
 
     # ------------------------------------------------------------
     # SAME SUBJECT ONLY ONCE PER DAY
     # ------------------------------------------------------------
 
-    for variables in subject_day.values():
-
-        model.AddAtMostOne(
-            variables
+    for (subject_id, day), variables in subject_day.items():
+        subject_row = next(
+            (s for s in subjects if int(s.get("subject_id")) == int(subject_id)),
+            {},
         )
+        if str(subject_row.get("course_category") or "").strip().upper() == "PROJ":
+            continue
+        model.AddAtMostOne(variables)
 
     # ============================================================
     # FACULTY DAILY WORKLOAD
@@ -1474,8 +1455,8 @@ def generate(context):
 
     for alt_idx in range(number_of_outputs):
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 20
-        solver.parameters.num_search_workers = 4
+        solver.parameters.max_time_in_seconds = 3
+        solver.parameters.num_search_workers = 8
         solver.parameters.random_seed = alt_idx * 100 + 42
 
         status = solver.Solve(model)
@@ -1492,7 +1473,7 @@ def generate(context):
                     solution_vars.append(var)
                     subject = task["subject"]
                     faculty_ids = task["faculty_ids"]
-                    main = faculty_ids[0]
+                    main = faculty_ids[0] if faculty_ids else None
                     co = faculty_ids[1] if len(faculty_ids) > 1 else None
                     component = task["component"]
                     block_size = int(task["block_size"])
@@ -1545,14 +1526,25 @@ def generate(context):
             "alternative_id": alt_idx + 1,
         }
 
-        alternatives.append({
-            "id": alt_idx + 1,
-            "timetable": output,
-            "validation": validation,
-            "summary": alt_summary,
-        })
+        # Only expose alternatives that pass the same validator used
+        # by the API. Still add the no-good cut so a bad placement cannot
+        # be returned again.
+        if validation.get("valid"):
+            alternatives.append({
+                "id": len(alternatives) + 1,
+                "name": f"Option {len(alternatives) + 1}",
+                "timetable": output,
+                "validation": validation,
+                "summary": {
+                    **alt_summary,
+                    "alternative_id": len(alternatives) + 1,
+                },
+            })
 
         if solution_vars:
+            # Cut only actual placement variables that were true in this
+            # solution. The next solution must differ in at least one
+            # task/day/start placement.
             model.AddBoolOr([v.Not() for v in solution_vars])
 
     if not alternatives:

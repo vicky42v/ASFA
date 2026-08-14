@@ -24,7 +24,9 @@ import {
   timetableApi,
   facultyApi,
   subjectApi,
-  facultyAssignmentDetailApi,
+  departmentApi,
+  schemeApi,
+  semesterApi,
 } from '../services/api';
 
 export default function TimetableDashboardScreen() {
@@ -71,8 +73,12 @@ export default function TimetableDashboardScreen() {
     semester_id: '',
     academic_year: '2026-27',
     semester_type: 'Odd',
-    cycle: 'P',
+    cycle: '',
   });
+
+  const [numberOfOutputs, setNumberOfOutputs] = useState(3);
+  const [generatedAlternatives, setGeneratedAlternatives] = useState([]);
+  const [selectedAlternativeId, setSelectedAlternativeId] = useState(1);
 
   // =========================================================
   // ASSIGNMENT STATE
@@ -81,11 +87,11 @@ export default function TimetableDashboardScreen() {
   const [facultyAssignments, setFacultyAssignments] =
     useState({});
 
-  // { subjectId: { Theory: { main, co }, Lab: { main, co } } }
-  // Keep facultyAssignments above as a backwards-compatible main-faculty map
-  // for elective selection and existing screen behaviour.
-  const [componentAssignments, setComponentAssignments] =
-    useState({});
+  // Component-level assignments: {subjectId: {Theory:{Main,Co}, Lab:{Main,Co}}}
+  // IPCC subjects can therefore use different faculty for Theory and Lab.
+  const [componentAssignments, setComponentAssignments] = useState({});
+  const [savedComponentAssignments, setSavedComponentAssignments] = useState([]);
+  const [allComponentAssignments, setAllComponentAssignments] = useState([]);
 
   const [savedAssignments, setSavedAssignments] =
     useState([]);
@@ -93,6 +99,35 @@ export default function TimetableDashboardScreen() {
   const [assignmentSearch, setAssignmentSearch] =
     useState('');
 
+  const [assignmentLoading, setAssignmentLoading] =
+    useState(false);
+
+  const [assignmentSaving, setAssignmentSaving] =
+    useState(false);
+
+  // =========================================================
+  // TIMETABLE STATE
+  // =========================================================
+
+  const [selectedSlot, setSelectedSlot] = useState({
+    day: 'Tuesday',
+    period: 'Period V (1:45 - 2:40)',
+    subject: 'Project (Team Based)',
+  });
+
+  const [isGenerating, setIsGenerating] =
+    useState(false);
+
+  const [message, setMessage] = useState('');
+
+  // =========================================================
+  // ID HELPERS
+  //
+  // Different APIs sometimes return:
+  // id
+  // department_id
+  // scheme_id
+  // semester_id
   //
   // These helpers support all of them.
   // =========================================================
@@ -153,6 +188,55 @@ export default function TimetableDashboardScreen() {
     department?.departmentName ??
     'Unnamed Department';
 
+  // =========================================================
+  // LOCAL FLASK / MYSQL NORMALIZATION HELPERS
+  // =========================================================
+  // The local backend stores P/C cycles as the single-letter values
+  // `P` and `C`. The UI displays friendly labels such as `P Cycle`.
+  // Never send `P Cycle` / `C Cycle` to Flask.
+  const normalizeCycle = (value) => {
+    const normalized = String(value ?? '').trim().toUpperCase();
+
+    if (normalized === 'P' || normalized === 'P CYCLE') return 'P';
+    if (normalized === 'C' || normalized === 'C CYCLE') return 'C';
+
+    return '';
+  };
+
+  const getBasicScienceDepartment = (departmentList) => {
+    const list = Array.isArray(departmentList)
+      ? departmentList
+      : [];
+
+    return (
+      list.find((department) => {
+        const code = String(
+          department?.department_code ??
+            department?.code ??
+            ''
+        ).trim().toUpperCase();
+
+        return code === 'SH' || code === 'BSH';
+      }) ||
+      list.find((department) => {
+        const name = String(
+          department?.department_name ??
+            department?.name ??
+            department?.departmentName ??
+            ''
+        ).trim().toLowerCase();
+
+        return (
+          name === 'science and humanities' ||
+          name === 'basic science' ||
+          name.includes('science and humanities') ||
+          name.includes('basic science')
+        );
+      }) ||
+      null
+    );
+  };
+
 
   // =========================================================
   // API ARRAY NORMALIZER
@@ -207,15 +291,20 @@ export default function TimetableDashboardScreen() {
   // =========================================================
 
   const getCourseCategory = (subject) => {
-    return (
+    const explicit =
       subject?.course_category ||
       subject?.vtu_category ||
       subject?.category ||
-      subject?.current_category ||
-      subject?.group_name ||
-      subject?.group ||
-      'Unclassified'
-    );
+      subject?.current_category;
+
+    if (explicit) return String(explicit).trim().toUpperCase();
+
+    const type = String(subject?.type || subject?.course_type || '').trim().toUpperCase();
+    if (['IPCC', 'PCC', 'PEC', 'OEC', 'BSC', 'ESC', 'HSM', 'PROJ'].includes(type)) {
+      return type;
+    }
+
+    return 'Unclassified';
   };
 
   // =========================================================
@@ -236,6 +325,27 @@ export default function TimetableDashboardScreen() {
     }-${subject?.practical_hours || 0}`;
   };
 
+  const getTeachingComponents = (subject) => {
+    const theoryHours =
+      Number(subject?.lecture_hours || 0) +
+      Number(subject?.tutorial_hours || 0);
+    const practicalHours = Number(subject?.practical_hours || 0);
+    const components = [];
+    if (theoryHours > 0) components.push('Theory');
+    if (practicalHours > 0) components.push('Lab');
+    return components;
+  };
+
+  const getComponentHours = (subject, component) =>
+    component === 'Lab'
+      ? Number(subject?.practical_hours || 0)
+      : Number(subject?.lecture_hours || 0) + Number(subject?.tutorial_hours || 0);
+
+  const getComponentFaculty = (subject, component, role = 'Main') => {
+    const subjectId = String(getSubjectId(subject));
+    return componentAssignments?.[subjectId]?.[component]?.[role] || '';
+  };
+
   // Weekly workload contribution of a subject. This matches the
   // backend faculty workload calculation: lecture + tutorial + practical hours.
   const getSubjectWorkloadHours = (subject) =>
@@ -243,31 +353,50 @@ export default function TimetableDashboardScreen() {
     Number(subject?.tutorial_hours || 0) +
     Number(subject?.practical_hours || 0);
 
-  const getSubjectComponents = (subject) => {
-    const components = [];
-    if (Number(subject?.lecture_hours || 0) + Number(subject?.tutorial_hours || 0) > 0) {
-      components.push('Theory');
+  // Faculty workload policy:
+  // Assistant Professor 16-18h
+  // Associate Professor 14-16h
+  // Professor 14-16h
+  // HOD 8-12h (HOD overrides designation)
+  const getFacultyWorkloadBounds = (faculty) => {
+    const designation = String(
+      faculty?.designation ?? faculty?.faculty_designation ?? ''
+    ).trim().toLowerCase();
+    const role = String(
+      faculty?.role ?? faculty?.faculty_role ?? ''
+    ).trim().toLowerCase();
+
+    const isHod =
+      role === 'hod' ||
+      designation.includes('hod') ||
+      designation.includes('head of the department') ||
+      designation.includes('head of department');
+
+    if (isHod) return { min: 8, max: 12, label: 'HOD' };
+    if (designation.includes('assistant professor')) {
+      return { min: 16, max: 18, label: 'Assistant Professor' };
     }
-    if (Number(subject?.practical_hours || 0) > 0) {
-      components.push('Lab');
+    if (designation.includes('associate professor')) {
+      return { min: 14, max: 16, label: 'Associate Professor' };
     }
-    return components;
+    if (designation === 'professor' || designation.startsWith('professor ')) {
+      return { min: 14, max: 16, label: 'Professor' };
+    }
+
+    const dbMin = Number(faculty?.min_workload);
+    const dbMax = Number(faculty?.max_workload);
+    return {
+      min: Number.isFinite(dbMin) ? dbMin : 0,
+      max: Number.isFinite(dbMax) ? dbMax : 18,
+      label: faculty?.designation || faculty?.role || 'Faculty',
+    };
   };
 
-  const getComponentAssignment = (subjectId, component) =>
-    componentAssignments[String(subjectId)]?.[component] || {};
+  const getFacultyMinWorkload = (faculty) =>
+    getFacultyWorkloadBounds(faculty).min;
 
-  const subjectHasRequiredAssignments = (subject) =>
-    getSubjectComponents(subject).every(
-      (component) => Boolean(
-        getComponentAssignment(getSubjectId(subject), component).main
-      )
-    );
-
-  const getFacultyMaxWorkload = (faculty) => {
-    const value = Number(faculty?.max_workload);
-    return Number.isFinite(value) ? value : 0;
-  };
+  const getFacultyMaxWorkload = (faculty) =>
+    getFacultyWorkloadBounds(faculty).max;
 
   const getFacultyDatabaseWorkload = (faculty) => {
     const value = Number(faculty?.workload);
@@ -321,60 +450,38 @@ export default function TimetableDashboardScreen() {
 
       return desiredOrder
         .map((semesterNo) =>
-          semesters.find(
-            (semester) =>
-              Number(
-                getSemesterNo(
-                  semester
-                )
-              ) === semesterNo &&
-              normalizeSemesterType(
-                semester?.semester_type ??
-                  semester?.type
-              ) ===
+          semesters.find((semester) => {
+            const numberMatches =
+              Number(getSemesterNo(semester)) === semesterNo;
+
+            if (!numberMatches) {
+              return false;
+            }
+
+            const rawType =
+              semester?.semester_type ??
+              semester?.type ??
+              '';
+
+            if (rawType) {
+              return (
+                normalizeSemesterType(rawType) ===
                 context.semester_type
-          )
+              );
+            }
+
+            // Some local timetable_db responses expose only semester_no.
+            // In that case infer Odd/Even from the semester number.
+            return context.semester_type === 'Odd'
+              ? semesterNo % 2 === 1
+              : semesterNo % 2 === 0;
+          })
         )
         .filter(Boolean);
     }, [
       semesters,
       context.semester_type,
     ]);
-
-  const selectedSemester = useMemo(
-    () => semesters.find(
-      (semester) => String(getSemesterId(semester)) === String(context.semester_id)
-    ),
-    [semesters, context.semester_id]
-  );
-
-  const isFoundationSemester = [1, 2].includes(
-    Number(getSemesterNo(selectedSemester))
-  );
-
-  const basicScienceDepartment = useMemo(
-    () => departments.find((department) => {
-      const name = String(getDepartmentName(department)).toLowerCase();
-      const code = String(department?.department_code ?? department?.code ?? '').toLowerCase();
-      return (name.includes('basic') && name.includes('science')) ||
-        name.includes('science and humanities') || ['bs', 'bsc', 'sh'].includes(code);
-    }),
-    [departments]
-  );
-
-  // Semester 1/2 belongs to Basic Science and always has a distinct P/C
-  // timetable context.  Keep the existing selector layout, but prevent an
-  // accidental engineering-department context from being sent to the API.
-  useEffect(() => {
-    if (!isFoundationSemester || !basicScienceDepartment) return;
-    const basicScienceId = String(getDepartmentId(basicScienceDepartment));
-    setContext((current) => ({
-      ...current,
-      department_id: basicScienceId,
-      cycle: current.cycle === 'C' ? 'C' : 'P',
-    }));
-  }, [isFoundationSemester, basicScienceDepartment]);
-
 
   // =========================================================
   // INITIAL LOAD
@@ -428,34 +535,95 @@ export default function TimetableDashboardScreen() {
         setSemesters(Array.isArray(semestersArray) ? semestersArray : []);
         setSubjectList(Array.isArray(subjectsArray) ? subjectsArray : []);
 
-        const firstDepartment =
-          departmentsArray[0];
+        // =======================================================
+// DEFAULT DEPARTMENT + SCHEME
+// =======================================================
+// Prefer AIML as the initial department instead of relying
+// on the order returned by MySQL.
+//
+// The user can still change the department normally from
+// the existing frontend selector.
 
-        const firstScheme =
-          schemesArray.find((scheme) => {
-            const schemeDepartmentId =
-              scheme?.department_id ??
-              scheme?.departmentId ??
-              '';
-            return (
-              !schemeDepartmentId ||
-              String(schemeDepartmentId) ===
-                String(getDepartmentId(firstDepartment))
-            );
-          }) || schemesArray[0];
+const firstDepartment =
+  departmentsArray.find((department) => {
+    const code = String(
+      department?.department_code ??
+        department?.code ??
+        ''
+    )
+      .trim()
+      .toUpperCase();
 
+    const name = String(
+      department?.department_name ??
+        department?.name ??
+        department?.departmentName ??
+        ''
+    )
+      .trim()
+      .toLowerCase();
+
+    return (
+      code === 'AIML' ||
+      name.includes(
+        'artificial intelligence and machine learning'
+      )
+    );
+  }) || departmentsArray[0];
+
+// Select the scheme belonging to the selected department.
+// Prefer scheme ID 1 because that is the 2022 scheme used
+// by the current timetable database.
+const firstScheme =
+  schemesArray.find((scheme) => {
+    const schemeId =
+      getSchemeId(scheme);
+
+    const schemeDepartmentId =
+      scheme?.department_id ??
+      scheme?.departmentId ??
+      '';
+
+    return (
+      String(schemeId) === '1' &&
+      (
+        !schemeDepartmentId ||
+        String(schemeDepartmentId) ===
+          String(getDepartmentId(firstDepartment))
+      )
+    );
+  }) ||
+  schemesArray.find((scheme) => {
+    const schemeDepartmentId =
+      scheme?.department_id ??
+      scheme?.departmentId ??
+      '';
+
+    return (
+      !schemeDepartmentId ||
+      String(schemeDepartmentId) ===
+        String(getDepartmentId(firstDepartment))
+    );
+  }) ||
+  schemesArray[0];
         // Highest Odd semester first.
         //
         // 7 -> 5 -> 3 -> 1
         const firstOddSemester =
           semestersArray
-            .filter(
-              (semester) =>
-                normalizeSemesterType(
-                  semester?.semester_type ??
-                    semester?.type
-                ) === 'Odd'
-            )
+            .filter((semester) => {
+              const number = Number(getSemesterNo(semester));
+              const rawType =
+                semester?.semester_type ??
+                semester?.type ??
+                '';
+
+              if (rawType) {
+                return normalizeSemesterType(rawType) === 'Odd';
+              }
+
+              return Number.isFinite(number) && number % 2 === 1;
+            })
             .sort(
               (a, b) =>
                 Number(getSemesterNo(b)) -
@@ -481,6 +649,8 @@ export default function TimetableDashboardScreen() {
           academic_year: '2026-27',
 
           semester_type: 'Odd',
+
+          cycle: '',
         });
       } catch (error) {
         console.error(
@@ -562,9 +732,12 @@ export default function TimetableDashboardScreen() {
           // support department_id filtering correctly, fall back
           // to the complete faculty list and filter it here.
           const allFacultyData = await facultyApi.list('');
-          const allFaculty = Array.isArray(allFacultyData)
-            ? allFacultyData
-            : [];
+          const allFaculty = toArray(allFacultyData, [
+            'faculty',
+            'faculties',
+            'items',
+            'rows',
+          ]);
 
           let faculty = allFaculty.filter((item) => {
             const itemDepartmentId =
@@ -678,7 +851,6 @@ export default function TimetableDashboardScreen() {
     context.semester_id,
     context.academic_year,
     context.semester_type,
-    context.cycle,
   ]);
 
   // =========================================================
@@ -709,43 +881,45 @@ export default function TimetableDashboardScreen() {
                 '',
             });
 
-          const data = await facultyAssignmentDetailApi.list({
-            academic_year: context.academic_year,
-            department_id: context.department_id || '',
-            semester_id: context.semester_id || '',
-            semester_type: context.semester_type || '',
-          });
+          let data;
 
-          const assignments = toArray(data, ['items', 'rows']);
+          try {
+            data = await api.get(
+              `/faculty-subject-assignments?${params.toString()}`
+            );
+          } catch (filteredError) {
+            console.warn(
+              'Filtered faculty-assignment request failed; retrying by academic year:',
+              filteredError
+            );
+
+            data = await api.get(
+              `/faculty-subject-assignments?academic_year=${encodeURIComponent(
+                context.academic_year
+              )}`
+            );
+          }
+
+          const assignments = toArray(
+            data,
+            [
+              'assignments',
+              'faculty_subject_assignments',
+              'facultySubjectAssignments',
+              'items',
+              'rows',
+            ]
+          );
 
           setSavedAssignments(
             assignments
           );
 
-          const assignmentMap = {};
-          const componentMap = {};
-
-          assignments.forEach(
-            (assignment) => {
-              if (
-                assignment.subject_id &&
-                assignment.faculty_id
-              ) {
-                const subjectId = String(assignment.subject_id);
-                const component = String(assignment.component || 'Theory');
-                const role = String(assignment.assignment_role || 'Main').toLowerCase();
-                componentMap[subjectId] ||= {};
-                componentMap[subjectId][component] ||= {};
-                componentMap[subjectId][component][role] = String(assignment.faculty_id);
-                if (role === 'main') assignmentMap[subjectId] = String(assignment.faculty_id);
-              }
-            }
-          );
-
-          setFacultyAssignments(
-            assignmentMap
-          );
-          setComponentAssignments(componentMap);
+          // IMPORTANT: existing database assignments are kept in
+          // savedAssignments so Save Assignments can replace/deactivate
+          // them, but they are NOT copied into the visible selectors.
+          // The assignment screen is intentionally a fresh selection UI.
+          setFacultyAssignments({});
         } catch (error) {
           console.error(
             'Failed to load faculty assignments:',
@@ -764,10 +938,82 @@ export default function TimetableDashboardScreen() {
   }, [
     context.academic_year,
     context.department_id,
+    context.semester_type,
+  ]);
+
+  // =========================================================
+  // LOAD COMPONENT-LEVEL FACULTY ASSIGNMENTS
+  //
+  // These rows are retained for reference/workload, but are NOT used
+  // to pre-select faculty in the assignment form. Existing MySQL rows
+  // are replaced when the administrator presses Save Assignments.
+  // =========================================================
+
+  useEffect(() => {
+    const loadComponentAssignments = async () => {
+      if (!context.academic_year || !context.department_id || !context.semester_id) {
+        setSavedComponentAssignments([]);
+        return;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          academic_year: context.academic_year,
+          department_id: context.department_id,
+          semester_id: context.semester_id,
+          semester_type: context.semester_type || '',
+        });
+
+        const data = await api.get(
+          `/faculty-assignment-details?${params.toString()}`
+        );
+
+        setSavedComponentAssignments(
+          toArray(data, ['details', 'assignments', 'items', 'rows'])
+        );
+      } catch (error) {
+        console.error(
+          'Failed to load component faculty assignments:',
+          error
+        );
+        setSavedComponentAssignments([]);
+      }
+    };
+
+    loadComponentAssignments();
+  }, [
+    context.academic_year,
+    context.department_id,
     context.semester_id,
     context.semester_type,
-    context.cycle,
   ]);
+
+  // =========================================================
+  // LOAD ALL COMPONENT ASSIGNMENTS FOR GLOBAL WORKLOAD
+  // =========================================================
+  useEffect(() => {
+    const loadAllComponentAssignments = async () => {
+      if (!context.academic_year) {
+        setAllComponentAssignments([]);
+        return;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          academic_year: context.academic_year,
+        });
+        const data = await api.get(`/faculty-assignment-details?${params.toString()}`);
+        setAllComponentAssignments(
+          toArray(data, ['details', 'assignments', 'items', 'rows'])
+        );
+      } catch (error) {
+        console.error('Failed to load global faculty workload:', error);
+        setAllComponentAssignments([]);
+      }
+    };
+
+    loadAllComponentAssignments();
+  }, [context.academic_year]);
 
   // =========================================================
   // FILTER SUBJECTS
@@ -1010,8 +1256,24 @@ export default function TimetableDashboardScreen() {
       String(optionalRaw).toLowerCase() === 'yes';
 
     return (
-      optional &&
-      (category === 'PEC' || category === 'OEC')
+      (category === 'PEC' || category === 'OEC') &&
+      (optional || Boolean(getOptionGroupId(subject)))
+    );
+  };
+
+  const isSpecialActivity = (subject) => {
+    const text = [
+      subject?.subject_code,
+      subject?.subject_name,
+      subject?.course_category,
+      subject?.group_name,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return ['sports', 'yoga', 'nss', 'ncc'].some((token) =>
+      text.includes(token)
     );
   };
 
@@ -1065,67 +1327,56 @@ export default function TimetableDashboardScreen() {
   //   only the assigned subject remains visible.
   // =========================================================
 
+  const getAssignmentSection = (subject) => {
+    if (isSpecialActivity(subject)) return 'SPECIAL';
+    const category = getCourseCategory(subject);
+    if (category === 'PEC') return 'PEC';
+    if (category === 'OEC') return 'OEC';
+    if (category === 'PROJ') return 'PROJECT';
+    return 'REQUIRED';
+  };
+
+  const assignmentSectionMeta = {
+    REQUIRED: { title: 'REQUIRED / DEFAULT COURSES', tone: '#0F766E' },
+    PEC: { title: 'PROFESSIONAL ELECTIVE — SELECT EXACTLY ONE', tone: '#7E22CE' },
+    OEC: { title: 'OPEN ELECTIVE — SELECT EXACTLY ONE', tone: '#7E22CE' },
+    PROJECT: { title: 'PROJECT / PRACTICAL WORK', tone: '#B45309' },
+    SPECIAL: { title: 'SATURDAY INSTITUTIONAL ACTIVITIES', tone: '#B45309' },
+  };
+
   const visibleSubjects = useMemo(() => {
-    const selectedByGroup = {};
+    const clean = filteredSubjects.filter((subject) => {
+      const category = getCourseCategory(subject);
+      return category !== 'Unclassified' || isSpecialActivity(subject);
+    });
+
+    const order = { REQUIRED: 1, PEC: 2, OEC: 3, PROJECT: 4, SPECIAL: 5 };
+    return clean.sort((a, b) => {
+      const sectionDiff =
+        order[getAssignmentSection(a)] - order[getAssignmentSection(b)];
+      if (sectionDiff) return sectionDiff;
+      return getSubjectCode(a).localeCompare(getSubjectCode(b));
+    });
+  }, [filteredSubjects]);
+
+  const selectedChoiceByGroup = useMemo(() => {
+    const selected = {};
 
     filteredSubjects.forEach((subject) => {
-      if (!isChoiceSubject(subject)) {
-        return;
-      }
+      if (!isChoiceSubject(subject)) return;
 
-      const groupKey =
-        getOptionGroupKey(subject);
+      const groupKey = getOptionGroupKey(subject);
+      if (!groupKey) return;
 
-      if (!groupKey) {
-        return;
-      }
-
-      const subjectId = String(
-        getSubjectId(subject)
-      );
-
+      const subjectId = String(getSubjectId(subject));
       if (facultyAssignments[subjectId]) {
-        selectedByGroup[groupKey] =
-          subjectId;
+        selected[groupKey] = subjectId;
       }
     });
 
-    return filteredSubjects.filter(
-      (subject) => {
-        if (!isChoiceSubject(subject)) {
-          return true;
-        }
+    return selected;
+  }, [filteredSubjects, facultyAssignments]);
 
-        const groupKey =
-          getOptionGroupKey(subject);
-
-        // No option group -> normal subject.
-        if (!groupKey) {
-          return true;
-        }
-
-        const selectedSubjectId =
-          selectedByGroup[groupKey];
-
-        // No option selected yet:
-        // show every alternative.
-        if (!selectedSubjectId) {
-          return true;
-        }
-
-        // An option is selected:
-        // show ONLY that option.
-        return (
-          String(
-            getSubjectId(subject)
-          ) === selectedSubjectId
-        );
-      }
-    );
-  }, [
-    filteredSubjects,
-    facultyAssignments,
-  ]);
 
   // =========================================================
   // REQUIRED SUBJECTS
@@ -1147,6 +1398,12 @@ export default function TimetableDashboardScreen() {
     const result = [];
 
     filteredSubjects.forEach((subject) => {
+      // Sports/Yoga/NSS/NCC are institutional Saturday activities, not
+      // faculty-assignment subjects. The generator reserves Saturday for them.
+      if (isSpecialActivity(subject)) {
+        return;
+      }
+
       if (!isChoiceSubject(subject)) {
         result.push(subject);
         return;
@@ -1238,12 +1495,23 @@ export default function TimetableDashboardScreen() {
   const missingAssignments =
     useMemo(() => {
       return requiredSubjects.filter(
-        (subject) => !subjectHasRequiredAssignments(subject)
+        (subject) => {
+          // Saturday institutional activities are generated from the
+          // curriculum and do not require a faculty assignment.
+          if (isSpecialActivity(subject)) {
+            return false;
+          }
+
+          return !facultyAssignments[
+            String(
+              getSubjectId(subject)
+            )
+          ];
+        }
       );
     }, [
       requiredSubjects,
       facultyAssignments,
-      componentAssignments,
     ]);
 
   const assignedCount =
@@ -1261,56 +1529,82 @@ export default function TimetableDashboardScreen() {
   const projectedFacultyWorkload = useMemo(() => {
     const result = {};
 
-    facultyList.forEach((faculty) => {
-      const id = String(getFacultyId(faculty));
-      result[id] = getFacultyDatabaseWorkload(faculty);
-    });
-
-    const visibleSubjectIds = new Set(
-      filteredSubjects.map((subject) => String(getSubjectId(subject)))
-    );
-
-    // Remove the DB contribution of visible subjects from the base
-    // workload, then add the currently selected faculty back in.
-    // This prevents double-counting when the user changes faculty.
-    savedAssignments.forEach((assignment) => {
+    // Authoritative source: component-level assignments for the entire
+    // academic year. Main + Co both count for Lab.
+    allComponentAssignments.forEach((assignment) => {
       if (String(assignment.status ?? 'Active').toLowerCase() !== 'active') return;
 
+      const facultyId = String(assignment.faculty_id ?? '');
       const subjectId = String(assignment.subject_id ?? '');
-      if (!visibleSubjectIds.has(subjectId)) return;
-
       const subject = subjectList.find(
         (item) => String(getSubjectId(item)) === subjectId
       );
-      if (!subject) return;
+      if (!facultyId || !subject) return;
+
+      const component = String(assignment.component || 'Theory');
+      const hours = getComponentHours(subject, component);
+      if (!hours) return;
+
+      result[facultyId] = (result[facultyId] || 0) + hours;
+    });
+
+    // Remove saved rows for the context currently being edited.
+    const currentContextSubjectIds = new Set(
+      filteredSubjects.map((subject) => String(getSubjectId(subject)))
+    );
+
+    savedComponentAssignments.forEach((assignment) => {
+      if (String(assignment.status ?? 'Active').toLowerCase() !== 'active') return;
+
+      const subjectId = String(assignment.subject_id ?? '');
+      if (!currentContextSubjectIds.has(subjectId)) return;
 
       const facultyId = String(assignment.faculty_id ?? '');
-      if (result[facultyId] !== undefined) {
-        result[facultyId] -= getSubjectWorkloadHours(subject);
-      }
+      const subject = subjectList.find(
+        (item) => String(getSubjectId(item)) === subjectId
+      );
+      const component = String(assignment.component || 'Theory');
+      if (!facultyId || !subject) return;
+
+      result[facultyId] = Math.max(
+        0,
+        (result[facultyId] || 0) - getComponentHours(subject, component)
+      );
     });
 
-    filteredSubjects.forEach((subject) => {
-      const subjectId = String(getSubjectId(subject));
-      const facultyId = facultyAssignments[subjectId];
-      if (!facultyId) return;
+    // Overlay unsaved Main/Co selections.
+    Object.entries(componentAssignments).forEach(([subjectId, components]) => {
+      const subject = subjectList.find(
+        (item) => String(getSubjectId(item)) === String(subjectId)
+      );
+      if (!subject || !currentContextSubjectIds.has(String(subjectId))) return;
 
-      const key = String(facultyId);
-      if (result[key] === undefined) result[key] = 0;
-      result[key] += getSubjectWorkloadHours(subject);
+      Object.entries(components || {}).forEach(([component, roles]) => {
+        const hours = getComponentHours(subject, component);
+        if (!hours) return;
+
+        Object.values(roles || {}).forEach((facultyId) => {
+          if (!facultyId) return;
+          const key = String(facultyId);
+          result[key] = (result[key] || 0) + hours;
+        });
+      });
     });
 
-    Object.keys(result).forEach((key) => {
-      result[key] = Math.max(0, Number(result[key].toFixed(2)));
+    facultyList.forEach((faculty) => {
+      const id = String(getFacultyId(faculty));
+      if (result[id] == null) result[id] = 0;
+      result[id] = Number(result[id].toFixed(2));
     });
 
     return result;
   }, [
+    allComponentAssignments,
     facultyList,
-    savedAssignments,
+    savedComponentAssignments,
     subjectList,
     filteredSubjects,
-    facultyAssignments,
+    componentAssignments,
   ]);
 
   const workloadExceededFaculty = useMemo(() => {
@@ -1318,7 +1612,16 @@ export default function TimetableDashboardScreen() {
       const id = String(getFacultyId(faculty));
       const max = getFacultyMaxWorkload(faculty);
       const current = projectedFacultyWorkload[id] ?? 0;
-      return max > 0 && current > max;
+      return current > max;
+    });
+  }, [facultyList, projectedFacultyWorkload]);
+
+  const workloadBelowMinimumFaculty = useMemo(() => {
+    return facultyList.filter((faculty) => {
+      const id = String(getFacultyId(faculty));
+      const min = getFacultyMinWorkload(faculty);
+      const current = projectedFacultyWorkload[id] ?? 0;
+      return current < min;
     });
   }, [facultyList, projectedFacultyWorkload]);
 
@@ -1326,32 +1629,353 @@ export default function TimetableDashboardScreen() {
   // SELECT FACULTY
   // =========================================================
 
-  const handleComponentFacultyChange = (subject, component, role, facultyId) => {
-    const subjectId = String(getSubjectId(subject));
-    setComponentAssignments((current) => ({
-      ...current,
-      [subjectId]: {
-        ...(current[subjectId] || {}),
-        [component]: {
-          ...(current[subjectId]?.[component] || {}),
-          [role]: facultyId,
-        },
-      },
-    }));
-    if (role === 'main') {
-      setFacultyAssignments((current) => ({ ...current, [subjectId]: facultyId }));
-    }
+  const handleFacultyChange = (
+    subject,
+    facultyId
+  ) => {
+    const subjectId = getSubjectId(subject);
+    const choiceGroup = getOptionGroupKey(subject);
+
+    setFacultyAssignments((current) => {
+      const next = { ...current };
+
+      // Selecting an elective is a single-choice operation. If the user
+      // switches to another option, remove the previous option's faculty
+      // assignment from the same PEC/OEC group first.
+      if (choiceGroup && facultyId) {
+        filteredSubjects.forEach((candidate) => {
+          if (getOptionGroupKey(candidate) !== choiceGroup) return;
+          const candidateId = String(getSubjectId(candidate));
+          if (candidateId !== String(subjectId)) {
+            delete next[candidateId];
+          }
+        });
+      }
+
+      if (facultyId) {
+        next[String(subjectId)] = facultyId;
+      } else {
+        delete next[String(subjectId)];
+      }
+
+      return next;
+    });
   };
 
-  // Preserve the existing primary selector: it addresses Theory when a
-  // subject has one, otherwise it is the Lab Main Faculty selector.
-  const handleFacultyChange = (subject, facultyId) =>
-    handleComponentFacultyChange(
-      subject,
-      getSubjectComponents(subject).includes('Theory') ? 'Theory' : 'Lab',
-      'main',
-      facultyId
+  const clearElectiveSelection = (groupKey) => {
+    if (!groupKey) return;
+
+    const siblingIds = filteredSubjects
+      .filter((subject) => getOptionGroupKey(subject) === groupKey)
+      .map((subject) => String(getSubjectId(subject)));
+
+    setFacultyAssignments((current) => {
+      const next = { ...current };
+      siblingIds.forEach((id) => delete next[id]);
+      return next;
+    });
+
+    setComponentAssignments((current) => {
+      const next = { ...current };
+      siblingIds.forEach((id) => delete next[id]);
+      return next;
+    });
+  };
+
+  // =========================================================
+  // RELOAD FACULTY ASSIGNMENTS FROM DATABASE
+  //
+  // Component-detail assignments are authoritative for the
+  // component selectors. Parent assignments are only used as
+  // a fallback for legacy rows.
+  // =========================================================
+
+  const reloadFacultyAssignmentsFromDatabase = async () => {
+    if (!context.academic_year) {
+      setSavedAssignments([]);
+      setSavedComponentAssignments([]);
+      setComponentAssignments({});
+      setFacultyAssignments({});
+      return;
+    }
+
+    const parentParams = new URLSearchParams({
+      academic_year: context.academic_year,
+      department_id: context.department_id || '',
+      semester_type: context.semester_type || '',
+    });
+
+    const parentData = await api.get(
+      `/faculty-subject-assignments?${parentParams.toString()}`
     );
+
+    const assignments = toArray(
+      parentData,
+      [
+        'assignments',
+        'faculty_subject_assignments',
+        'facultySubjectAssignments',
+        'items',
+        'rows',
+      ]
+    );
+
+    setSavedAssignments(assignments);
+
+    const activeParentAssignments = assignments.filter(
+      (assignment) =>
+        String(
+          assignment.status ?? ''
+        ).toLowerCase() === 'active'
+    );
+
+    let details = [];
+
+    if (
+      context.department_id &&
+      context.semester_id
+    ) {
+      const detailParams = new URLSearchParams({
+        academic_year: context.academic_year,
+        department_id: context.department_id,
+        semester_id: context.semester_id,
+        semester_type: context.semester_type || '',
+      });
+
+      const detailData = await api.get(
+        `/faculty-assignment-details?${detailParams.toString()}`
+      );
+
+      details = toArray(
+        detailData,
+        [
+          'details',
+          'assignments',
+          'items',
+          'rows',
+        ]
+      );
+    }
+
+    setSavedComponentAssignments(details);
+
+    const componentMap = {};
+
+    details
+      .filter(
+        (detail) =>
+          String(
+            detail.status ?? ''
+          ).toLowerCase() === 'active'
+      )
+      .forEach((detail) => {
+        const sid = String(detail.subject_id ?? '');
+        const component = String(
+          detail.component || ''
+        ).trim();
+        const role = String(
+          detail.assignment_role || 'Main'
+        ).trim();
+
+        if (
+          !sid ||
+          !['Theory', 'Lab'].includes(component) ||
+          !['Main', 'Co'].includes(role) ||
+          !detail.faculty_id
+        ) {
+          return;
+        }
+
+        if (!componentMap[sid]) {
+          componentMap[sid] = {};
+        }
+
+        if (!componentMap[sid][component]) {
+          componentMap[sid][component] = {};
+        }
+
+        componentMap[sid][component][role] =
+          String(detail.faculty_id);
+      });
+
+    setComponentAssignments(componentMap);
+
+    // Component details are authoritative when available.
+    // Legacy parent assignments are only a fallback.
+    const finalSubjectMap = {};
+
+    Object.entries(componentMap).forEach(
+      ([sid, components]) => {
+        const primary =
+          components?.Theory?.Main ||
+          components?.Lab?.Main;
+
+        if (primary) {
+          finalSubjectMap[sid] = String(primary);
+        }
+      }
+    );
+
+    activeParentAssignments.forEach(
+      (assignment) => {
+        const sid = String(
+          assignment.subject_id ?? ''
+        );
+
+        if (
+          sid &&
+          !finalSubjectMap[sid] &&
+          assignment.faculty_id
+        ) {
+          finalSubjectMap[sid] =
+            String(assignment.faculty_id);
+        }
+      }
+    );
+
+    setFacultyAssignments(finalSubjectMap);
+
+    return {
+      assignments,
+      details,
+      componentMap,
+      finalSubjectMap,
+    };
+  };
+
+  // =========================================================
+  // CHANGE COMPONENT FACULTY
+  //
+  // IMPORTANT:
+  // The previous implementation only updated the parent
+  // faculty-subject-assignment table. That left the active
+  // component-detail row unchanged, so the old faculty came
+  // back after the component data was reloaded.
+  //
+  // This version writes the component assignment to
+  // /faculty-assignment-details and then reloads the actual
+  // database state.
+  // =========================================================
+
+  const handleComponentFacultyChange = (
+    subject,
+    component,
+    facultyId,
+    role = 'Main'
+  ) => {
+    const subjectId = String(
+      getSubjectId(subject) ?? ''
+    );
+
+    if (!subjectId || !component) return;
+
+    const choiceGroup = getOptionGroupKey(subject);
+    const selectedFacultyId = String(facultyId || '');
+
+    // ---------------------------------------------------------
+    // UPDATE ONLY LOCAL FORM STATE
+    // ---------------------------------------------------------
+    // DO NOT call the backend here. The Save Assignments button is
+    // the single point that writes the selected faculty to MySQL.
+    // This prevents old DB rows from racing the dropdown state.
+
+    setComponentAssignments((current) => {
+      const next = JSON.parse(JSON.stringify(current));
+
+      if (choiceGroup && selectedFacultyId) {
+        filteredSubjects.forEach((candidate) => {
+          if (getOptionGroupKey(candidate) !== choiceGroup) return;
+
+          const candidateId = String(
+            getSubjectId(candidate)
+          );
+
+          if (candidateId !== subjectId) {
+            delete next[candidateId];
+          }
+        });
+      }
+
+      if (!next[subjectId]) {
+        next[subjectId] = {};
+      }
+
+      if (!next[subjectId][component]) {
+        next[subjectId][component] = {};
+      }
+
+      if (selectedFacultyId) {
+        next[subjectId][component][role] =
+          selectedFacultyId;
+      } else {
+        delete next[subjectId][component][role];
+      }
+
+      if (
+        Object.keys(
+          next[subjectId][component]
+        ).length === 0
+      ) {
+        delete next[subjectId][component];
+      }
+
+      if (
+        next[subjectId] &&
+        Object.keys(next[subjectId]).length === 0
+      ) {
+        delete next[subjectId];
+      }
+
+      return next;
+    });
+
+    // Compatibility map used by required-subject / PEC/OEC logic.
+    // Rebuild this subject from the prospective component state so a
+    // cleared Main selection cannot accidentally keep the old faculty.
+    setFacultyAssignments((current) => {
+      const next = { ...current };
+
+      if (choiceGroup && selectedFacultyId) {
+        filteredSubjects.forEach((candidate) => {
+          if (getOptionGroupKey(candidate) !== choiceGroup) return;
+
+          const candidateId = String(getSubjectId(candidate));
+          if (candidateId !== subjectId) delete next[candidateId];
+        });
+      }
+
+      const existing = componentAssignments?.[subjectId] || {};
+      const prospective = JSON.parse(JSON.stringify(existing));
+
+      if (!prospective[component]) prospective[component] = {};
+
+      if (selectedFacultyId) {
+        prospective[component][role] = selectedFacultyId;
+      } else {
+        delete prospective[component][role];
+      }
+
+      if (Object.keys(prospective[component]).length === 0) {
+        delete prospective[component];
+      }
+
+      const primary =
+        prospective?.Theory?.Main ||
+        prospective?.Lab?.Main ||
+        '';
+
+      if (primary) next[subjectId] = String(primary);
+      else delete next[subjectId];
+
+      return next;
+    });
+
+    setMessage(
+      selectedFacultyId
+        ? `✓ ${getSubjectCode(subject)} ${component} ${role} selected. Click Save Assignments to store it.`
+        : `${getSubjectCode(subject)} ${component} ${role} selection cleared.`
+    );
+  };
 
   // =========================================================
   // CHANGE SEMESTER TYPE
@@ -1372,11 +1996,14 @@ export default function TimetableDashboardScreen() {
             normalized,
 
           semester_id: '',
+
+          cycle: '',
         })
       );
 
       setFacultyAssignments({});
       setComponentAssignments({});
+      setSavedComponentAssignments([]);
       setAssignmentSearch('');
       setEntries([]);
       setGeneratedSemesters({});
@@ -1391,13 +2018,36 @@ export default function TimetableDashboardScreen() {
 
   const handleSemesterSelect =
     (semesterId) => {
-      setContext(
-        (current) => ({
-          ...current,
+      const selectedSem = semesters.find(
+        (s) => String(getSemesterId(s)) === String(semesterId)
+      );
+      const semNo = selectedSem ? Number(getSemesterNo(selectedSem)) : null;
 
-          semester_id:
-            semesterId,
-        })
+      setContext(
+        (current) => {
+          const isSem1Or2 = semNo === 1 || semNo === 2;
+
+          // Semester 1/2 are Basic Science / Science & Humanities
+          // semesters in the real timetable_db. Resolve that department
+          // dynamically from MySQL instead of hard-coding department ID 9.
+          const bshDept = getBasicScienceDepartment(departments);
+          const bshDeptId = bshDept
+            ? getDepartmentId(bshDept)
+            : current.department_id;
+
+          return {
+            ...current,
+            semester_id: semesterId,
+            department_id: isSem1Or2
+              ? bshDeptId
+              : current.department_id,
+
+            // Flask expects `P` or `C`, not the display labels.
+            cycle: isSem1Or2
+              ? (normalizeCycle(current.cycle) || 'P')
+              : '',
+          };
+        }
       );
 
       setAssignmentSearch('');
@@ -1416,19 +2066,50 @@ export default function TimetableDashboardScreen() {
 
   const handleDepartmentChange =
     (departmentId) => {
+      const selectedDepartment = departments.find(
+        (department) =>
+          String(getDepartmentId(department)) ===
+          String(departmentId)
+      );
+
+      // Pick the scheme belonging to the newly selected department.
+      // This prevents the local MySQL backend from receiving a scheme
+      // belonging to the previous department.
+      const matchingScheme =
+        schemes.find((scheme) => {
+          const schemeDepartmentId =
+            scheme?.department_id ??
+            scheme?.departmentId ??
+            '';
+
+          return (
+            !schemeDepartmentId ||
+            String(schemeDepartmentId) ===
+              String(departmentId)
+          );
+        }) || schemes[0];
+
       setContext(
         (current) => ({
           ...current,
 
           department_id:
+            getDepartmentId(selectedDepartment) ??
             departmentId,
 
+          scheme_id:
+            getSchemeId(matchingScheme) ??
+            current.scheme_id,
+
           semester_id: '',
+
+          cycle: '',
         })
       );
 
       setFacultyAssignments({});
       setComponentAssignments({});
+      setSavedComponentAssignments([]);
       setEntries([]);
       setGeneratedSemesters({});
       setMessage('');
@@ -1438,151 +2119,281 @@ export default function TimetableDashboardScreen() {
   // SAVE FACULTY ASSIGNMENTS
   // =========================================================
 
-  const saveFacultyAssignments =
-    async () => {
-      try {
-        setAssignmentSaving(true);
-        setMessage('');
+  const saveFacultyAssignments = async () => {
+    try {
+      setAssignmentSaving(true);
+      setMessage('');
 
-        const selectedSubjects = requiredSubjects.filter(
-          (subject) => getSubjectComponents(subject).some(
-            (component) => Boolean(getComponentAssignment(getSubjectId(subject), component).main)
-          )
+      const selectedSubjects = requiredSubjects.filter(
+        (subject) => !isSpecialActivity(subject)
+      );
+
+      if (missingOptionGroups.length > 0) {
+        setMessage(
+          'Select exactly one subject in each PEC/OEC option group before saving.'
         );
+        return;
+      }
 
-        if (selectedSubjects.length === 0) {
-          setMessage(
-            'Please assign faculty to at least one subject before saving.'
+      const missingComponents = [];
+
+      selectedSubjects.forEach((subject) => {
+        getTeachingComponents(subject).forEach((component) => {
+          if (!getComponentFaculty(subject, component, 'Main')) {
+            missingComponents.push(
+              `${getSubjectCode(subject)} ${component} Main`
+            );
+          }
+        });
+      });
+
+      if (missingComponents.length > 0) {
+        setMessage(
+          `Assign faculty for: ${missingComponents.join(', ')}`
+        );
+        return;
+      }
+
+      if (workloadExceededFaculty.length > 0) {
+        const details = workloadExceededFaculty
+          .map((faculty) => {
+            const id = String(getFacultyId(faculty));
+            return `${getFacultyName(faculty)} (${projectedFacultyWorkload[id]}h / ${getFacultyMaxWorkload(faculty)}h)`;
+          })
+          .join(', ');
+
+        setMessage(`Workload limit exceeded: ${details}.`);
+        return;
+      }
+
+      // ---------------------------------------------------------
+      // COMPONENT DETAILS ARE THE SOURCE OF TRUTH.
+      // The backend expects ONE faculty_id + ONE assignment_role.
+      // Do not send main_faculty_id / co_faculty_id.
+      // ---------------------------------------------------------
+      for (const subject of selectedSubjects) {
+        const subjectId = Number(getSubjectId(subject));
+
+        for (const component of getTeachingComponents(subject)) {
+          const mainFacultyId = getComponentFaculty(
+            subject,
+            component,
+            'Main'
           );
-          return;
-        }
 
-        const exceeded = workloadExceededFaculty;
-        if (exceeded.length > 0) {
-          const details = exceeded
-            .map((faculty) => {
-              const id = String(getFacultyId(faculty));
-              return `${getFacultyName(faculty)} (${projectedFacultyWorkload[id]}h / ${getFacultyMaxWorkload(faculty)}h)`;
-            })
-            .join(', ');
+          if (!mainFacultyId) continue;
 
-          setMessage(`Workload limit exceeded: ${details}. Reduce the assignments before saving.`);
-          return;
-        }
+          await api.post('/faculty-assignment-details', {
+            subject_id: subjectId,
+            faculty_id: Number(mainFacultyId),
+            academic_year: context.academic_year,
+            component,
+            assignment_role: 'Main',
+          });
 
-        let changed = 0;
+          // Lab Co-faculty is optional. Theory Co is never sent.
+          if (component === 'Lab') {
+            const coFacultyId = getComponentFaculty(
+              subject,
+              'Lab',
+              'Co'
+            );
 
-        for (const subject of selectedSubjects) {
-          const subjectId = String(getSubjectId(subject));
-
-          // -------------------------------------------------------
-          // PEC/OEC OPTION GROUP
-          //
-          // If one option is selected, deactivate any other
-          // active faculty assignment belonging to the same
-          // option group. This keeps the database consistent
-          // with the frontend: only the chosen elective remains
-          // active for timetable generation.
-          // -------------------------------------------------------
-
-          if (isChoiceSubject(subject)) {
-            const optionGroupId =
-              getOptionGroupId(subject);
-
-            if (
-              optionGroupId !== null &&
-              optionGroupId !== undefined &&
-              optionGroupId !== ''
-            ) {
-              const currentSemesterId = String(
-                subject?.semester_id ??
-                  subject?.semesterId ??
-                  ''
-              );
-
-              const currentCategory = String(
-                getCourseCategory(subject)
-              )
-                .trim()
-                .toUpperCase();
-
-              const siblingSubjects =
-                subjectList.filter(
-                  (candidate) =>
-                    isChoiceSubject(candidate) &&
-                    String(
-                      getOptionGroupId(candidate)
-                    ) === String(optionGroupId) &&
-                    String(
-                      candidate?.semester_id ??
-                        candidate?.semesterId ??
-                        ''
-                    ) === currentSemesterId &&
-                    String(
-                      getCourseCategory(candidate)
-                    )
-                      .trim()
-                      .toUpperCase() === currentCategory
+            if (coFacultyId) {
+              await api.post('/faculty-assignment-details', {
+                subject_id: subjectId,
+                faculty_id: Number(coFacultyId),
+                academic_year: context.academic_year,
+                component: 'Lab',
+                assignment_role: 'Co',
+              });
+            } else {
+              // If a previously saved Lab Co was removed in the UI,
+              // explicitly deactivate it. A missing row is harmless.
+              try {
+                await api.delete(
+                  `/faculty-assignment-details/${subjectId}/Lab?academic_year=${encodeURIComponent(context.academic_year)}&assignment_role=Co`
                 );
-
-              const siblingSubjectIds =
-                siblingSubjects.map(
-                  (candidate) =>
-                    String(
-                      getSubjectId(candidate)
-                    )
-                );
-
-              for (const siblingSubjectId of siblingSubjectIds) {
-                if (siblingSubjectId === subjectId) continue;
-                for (const component of ['Theory', 'Lab']) {
-                  await facultyAssignmentDetailApi.clear(
-                    siblingSubjectId,
-                    component,
-                    context.academic_year
-                  ).catch(() => undefined);
-                }
+              } catch (clearError) {
+                console.debug('No existing Lab Co assignment to clear:', clearError);
               }
             }
           }
+        }
+      }
 
-          for (const component of getSubjectComponents(subject)) {
-            const assignment = getComponentAssignment(subjectId, component);
-            if (!assignment.main) continue;
-            await facultyAssignmentDetailApi.save({
-              subject_id: Number(subjectId),
-              academic_year: context.academic_year,
-              component,
-              main_faculty_id: Number(assignment.main),
-              co_faculty_id: component === 'Lab' && assignment.co
-                ? Number(assignment.co)
-                : null,
-              department_id: context.department_id,
-              cycle: isFoundationSemester ? context.cycle : null,
-            });
-            changed += 1;
+      // ---------------------------------------------------------
+      // KEEP LEGACY PARENT ASSIGNMENT TABLE SYNCHRONIZED.
+      // Theory Main is preferred; otherwise Lab Main is used.
+      // Component detail rows remain authoritative for generation.
+      // ---------------------------------------------------------
+      const parentData = await api.get(
+        `/faculty-subject-assignments?academic_year=${encodeURIComponent(
+          context.academic_year
+        )}&department_id=${encodeURIComponent(
+          context.department_id || ''
+        )}&semester_type=${encodeURIComponent(
+          context.semester_type || ''
+        )}`
+      );
+
+      const parentAssignments = toArray(parentData, [
+        'assignments',
+        'faculty_subject_assignments',
+        'facultySubjectAssignments',
+        'items',
+        'rows',
+      ]);
+
+      for (const subject of selectedSubjects) {
+        const subjectId = String(getSubjectId(subject));
+        const primary =
+          getComponentFaculty(subject, 'Theory', 'Main') ||
+          getComponentFaculty(subject, 'Lab', 'Main');
+
+        if (!primary) continue;
+
+        const existing = parentAssignments.filter(
+          (assignment) =>
+            String(assignment.subject_id) === subjectId &&
+            String(assignment.status ?? 'Active').toLowerCase() === 'active'
+        );
+
+        const same = existing.find(
+          (assignment) =>
+            String(assignment.faculty_id) === String(primary)
+        );
+
+        if (same && existing.length === 1) continue;
+
+        for (const old of existing) {
+          const oldId = getAssignmentId(old);
+          if (!oldId) continue;
+
+          if (
+            String(old.faculty_id) !== String(primary) ||
+            existing.length > 1
+          ) {
+            await api.patch(
+              `/faculty-subject-assignments/${oldId}`,
+              { status: 'Inactive' }
+            );
           }
         }
 
-        setMessage(
-          changed === 0
-            ? 'Assignments are already saved. No changes were required.'
-            : `${changed} faculty assignment${changed === 1 ? '' : 's'} saved successfully.`
-        );
-      } catch (error) {
-        console.error(
-          'Failed to save assignments:',
-          error
-        );
-
-        setMessage(
-          error?.message ||
-            'Failed to save faculty assignments.'
-        );
-      } finally {
-        setAssignmentSaving(false);
+        if (!same || existing.length > 1) {
+          await api.post('/faculty-subject-assignments', {
+            faculty_id: Number(primary),
+            subject_id: Number(subjectId),
+            academic_year: context.academic_year,
+            status: 'Active',
+          });
+        }
       }
-    };
+
+      // ---------------------------------------------------------
+      // RELOAD EVERYTHING FROM MYSQL.
+      // This makes the selectors reflect the actual saved state.
+      // ---------------------------------------------------------
+      const detailData = await api.get(
+        `/faculty-assignment-details?academic_year=${encodeURIComponent(
+          context.academic_year
+        )}`
+      );
+
+      const details = toArray(detailData, [
+        'details',
+        'assignments',
+        'items',
+        'rows',
+      ]);
+
+      setAllComponentAssignments(details);
+
+      const contextDetails = context.semester_id
+        ? details.filter(
+            (detail) =>
+              String(detail.semester_id ?? '') ===
+              String(context.semester_id)
+          )
+        : details;
+
+      setSavedComponentAssignments(contextDetails);
+
+      const componentMap = {};
+
+      details
+        .filter(
+          (detail) =>
+            String(detail.status ?? 'Active').toLowerCase() === 'active'
+        )
+        .forEach((detail) => {
+          const sid = String(detail.subject_id ?? '');
+          const component = String(detail.component ?? '').trim();
+          const role = String(detail.assignment_role ?? 'Main').trim();
+
+          if (
+            !sid ||
+            !['Theory', 'Lab'].includes(component) ||
+            !['Main', 'Co'].includes(role) ||
+            !detail.faculty_id
+          ) {
+            return;
+          }
+
+          if (!componentMap[sid]) componentMap[sid] = {};
+          if (!componentMap[sid][component]) {
+            componentMap[sid][component] = {};
+          }
+
+          componentMap[sid][component][role] = String(detail.faculty_id);
+        });
+
+      setComponentAssignments(componentMap);
+
+      const subjectMap = {};
+      Object.entries(componentMap).forEach(([sid, components]) => {
+        const primary =
+          components?.Theory?.Main ||
+          components?.Lab?.Main;
+
+        if (primary) subjectMap[sid] = String(primary);
+      });
+
+      setFacultyAssignments(subjectMap);
+
+      const refreshedParentData = await api.get(
+        `/faculty-subject-assignments?academic_year=${encodeURIComponent(
+          context.academic_year
+        )}&department_id=${encodeURIComponent(
+          context.department_id || ''
+        )}&semester_type=${encodeURIComponent(
+          context.semester_type || ''
+        )}`
+      );
+
+      setSavedAssignments(
+        toArray(refreshedParentData, [
+          'assignments',
+          'faculty_subject_assignments',
+          'facultySubjectAssignments',
+          'items',
+          'rows',
+        ])
+      );
+
+      setMessage(
+        'Faculty assignments saved successfully. Theory/Lab Main and optional Lab Co are synchronized.'
+      );
+    } catch (error) {
+      console.error('Failed to save faculty assignments:', error);
+      setMessage(
+        error?.message || 'Failed to save faculty assignments.'
+      );
+    } finally {
+      setAssignmentSaving(false);
+    }
+  };
 
   // =========================================================
   // GO TO GENERATOR
@@ -1644,6 +2455,11 @@ export default function TimetableDashboardScreen() {
 
         semester_type:
           context.semester_type,
+
+        cycle: normalizeCycle(context.cycle),
+
+        number_of_outputs: numberOfOutputs,
+        generation_seed: Date.now() + Math.floor(Math.random() * 1000000),
       };
 
       console.log(
@@ -1763,8 +2579,12 @@ export default function TimetableDashboardScreen() {
               selectedSemester
             );
 
+          const alts = result?.alternatives || result?.data?.alternatives || [];
+          setGeneratedAlternatives(alts);
+          setSelectedAlternativeId(1);
+
           const timetable =
-            result?.timetable || [];
+            (alts.length > 0 ? alts[0].timetable : null) || result?.timetable || [];
 
           setEntries(timetable);
 
@@ -2017,35 +2837,26 @@ export default function TimetableDashboardScreen() {
           const result =
             await timetableApi.save({
               ...context,
+              cycle: normalizeCycle(context.cycle),
               entries,
             });
 
+          const selectedSemester =
+            generationSemesters.find(
+              (semester) =>
+                String(getSemesterId(semester)) ===
+                String(context.semester_id)
+            );
+
+          const savedEntries =
+            Number(result?.saved_entries) ||
+            Number(result?.saved) ||
+            entries.length;
+
           setMessage(
-            `${result.saved_entries} sessions saved for ${getSemesterLabel(
-              generationSemesters.find(
-                (semester) =>
-                  String(
-                    getSemesterId(
-                      semester
-                    )
-                  ) ===
-                  String(
-                    context.semester_id
-                  )
-              )
-                ? getSemesterNo(
-                    generationSemesters.find(
-                      (semester) =>
-                        String(
-                          getSemesterId(
-                            semester
-                          )
-                        ) ===
-                        String(
-                          context.semester_id
-                        )
-                    )
-                  )
+            `${savedEntries} sessions saved for ${getSemesterLabel(
+              selectedSemester
+                ? getSemesterNo(selectedSemester)
                 : ''
             )} semester.`
           );
@@ -2086,6 +2897,8 @@ export default function TimetableDashboardScreen() {
             const result =
               await timetableApi.save({
                 ...context,
+
+                cycle: normalizeCycle(context.cycle),
 
                 semester_id:
                   getSemesterId(
@@ -2176,11 +2989,42 @@ export default function TimetableDashboardScreen() {
     'Saturday',
   ].map((day) => {
     const findPeriod = (period) =>
-      entries.find(
-        (entry) =>
-          entry.day === day &&
-          Number(entry.period) === period
-      );
+      entries.find((entry) => {
+        if (!entry || entry.day !== day) return false;
+
+        const pNo =
+          entry.period_no !== undefined && entry.period_no !== null
+            ? Number(entry.period_no)
+            : Number(entry.period);
+
+        if (!isNaN(pNo) && pNo === period) return true;
+
+        if (typeof entry.period === 'string') {
+          if (
+            entry.period.includes(`Period ${period}`) ||
+            entry.period.startsWith(`Period ${period}`)
+          ) {
+            return true;
+          }
+          const romanNumerals = [
+            'I',
+            'II',
+            'III',
+            'IV',
+            'V',
+            'VI',
+            'VII',
+            'VIII',
+          ];
+          if (
+            romanNumerals[period - 1] &&
+            entry.period.includes(`Period ${romanNumerals[period - 1]}`)
+          ) {
+            return true;
+          }
+        }
+        return false;
+      });
 
     return {
       day,
@@ -2380,26 +3224,88 @@ export default function TimetableDashboardScreen() {
             }
           )}
         </div>
+
+        {(() => {
+          const selectedSem = semesters.find(
+            (s) => String(getSemesterId(s)) === String(context.semester_id)
+          );
+          const semNo = selectedSem ? Number(getSemesterNo(selectedSem)) : null;
+
+          if (semNo === 1 || semNo === 2) {
+            return (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  marginTop: '4px',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '0.72rem',
+                    fontWeight: '800',
+                    color: '#64748B',
+                  }}
+                >
+                  Cycle:
+                </span>
+
+                {[
+                  { value: 'P', label: 'P Cycle' },
+                  { value: 'C', label: 'C Cycle' },
+                ].map(({ value, label }) => {
+                  const active =
+                    normalizeCycle(context.cycle) === value;
+
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() =>
+                        setContext((current) => ({
+                          ...current,
+                          cycle: value,
+                        }))
+                      }
+                      style={{
+                        border: active
+                          ? '1px solid var(--primary)'
+                          : '1px solid #D9E2EC',
+
+                        background: active
+                          ? 'var(--primary)'
+                          : '#FFFFFF',
+
+                        color: active ? '#FFFFFF' : '#334155',
+
+                        borderRadius: '6px',
+
+                        padding: '4px 10px',
+
+                        fontSize: '0.7rem',
+
+                        fontWeight: '800',
+
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          }
+
+          return null;
+        })()}
       </div>
     );
 
   // =========================================================
   // FACULTY ASSIGNMENT VIEW
   // =========================================================
-
-  const renderCycleSelector = () => isFoundationSemester && (
-    <div className="form-group" style={{ margin: 0, minWidth: '145px' }}>
-      <label className="form-label">Cycle</label>
-      <select
-        className="form-select"
-        value={context.cycle || 'P'}
-        onChange={(e) => setContext((current) => ({ ...current, cycle: e.target.value }))}
-      >
-        <option value="P">P Cycle</option>
-        <option value="C">C Cycle</option>
-      </select>
-    </div>
-  );
 
   const renderFacultyAssignmentView =
     () => (
@@ -2547,7 +3453,6 @@ export default function TimetableDashboardScreen() {
                     e.target.value
                   )
                 }
-                disabled={isFoundationSemester}
               >
                 {departments.map(
                   (department) => {
@@ -2607,8 +3512,6 @@ export default function TimetableDashboardScreen() {
 
             {/* SEMESTER */}
             {renderSemesterSelector()}
-
-            {renderCycleSelector()}
 
             {/* ACADEMIC YEAR */}
             <div
@@ -2696,6 +3599,86 @@ export default function TimetableDashboardScreen() {
                 />
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* FACULTY WORKLOAD SUMMARY */}
+        <div
+          className="skit-card"
+          style={{ padding: '16px 20px' }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '12px',
+              flexWrap: 'wrap',
+              marginBottom: '12px',
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '800' }}>
+                Faculty Workload
+              </h3>
+              <div style={{ marginTop: '4px', fontSize: '0.72rem', color: '#64748B' }}>
+                Global weekly workload. Lab Co-faculty receives the same lab hours as Main.
+              </div>
+            </div>
+            {workloadExceededFaculty.length > 0 && (
+              <span className="badge" style={{ background: '#FEE2E2', color: '#B91C1C' }}>
+                {workloadExceededFaculty.length} over maximum
+              </span>
+            )}
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+              gap: '8px',
+            }}
+          >
+            {facultyList.map((faculty) => {
+              const id = String(getFacultyId(faculty));
+              const current = projectedFacultyWorkload[id] ?? 0;
+              const min = getFacultyMinWorkload(faculty);
+              const max = getFacultyMaxWorkload(faculty);
+              const over = current > max;
+              const under = current < min;
+              const pct = max > 0 ? Math.min(100, Math.round((current / max) * 100)) : 0;
+
+              return (
+                <div
+                  key={`workload-${id}`}
+                  style={{
+                    border: `1px solid ${over ? '#FCA5A5' : under ? '#FDE68A' : '#E2E8F0'}`,
+                    borderRadius: '10px',
+                    padding: '10px 12px',
+                    background: over ? '#FEF2F2' : under ? '#FFFBEB' : '#F8FAFC',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                    <div style={{ fontWeight: '800', fontSize: '0.75rem' }}>
+                      {getFacultyName(faculty)}
+                    </div>
+                    <div style={{ fontSize: '0.68rem', fontWeight: '800', color: over ? '#B91C1C' : '#475569' }}>
+                      {current}h / {max}h
+                    </div>
+                  </div>
+                  <div style={{ marginTop: '3px', fontSize: '0.66rem', color: '#64748B' }}>
+                    {getFacultyWorkloadBounds(faculty).label} · target {min}-{max}h · remaining {Math.max(0, max - current)}h
+                  </div>
+                  <div style={{ marginTop: '7px', height: '5px', background: '#E2E8F0', borderRadius: '999px', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${pct}%`,
+                      height: '100%',
+                      background: over ? '#DC2626' : under ? '#D97706' : '#16A34A',
+                    }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -2787,7 +3770,7 @@ export default function TimetableDashboardScreen() {
             >
               Loading faculty assignments...
             </div>
-          ) : filteredSubjects.length ===
+          ) : visibleSubjects.length ===
             0 ? (
             <div
               style={{
@@ -2849,22 +3832,74 @@ export default function TimetableDashboardScreen() {
 
                 <tbody>
                   {visibleSubjects.map(
-                    (subject) => {
+                    (subject, subjectIndex) => {
                       const subjectId =
                         getSubjectId(
                           subject
                         );
 
-                      const primaryComponent = getSubjectComponents(subject).includes('Theory')
-                        ? 'Theory'
-                        : 'Lab';
                       const selectedFaculty =
-                        getComponentAssignment(subjectId, primaryComponent).main || '';
+                        facultyAssignments[
+                          String(
+                            subjectId
+                          )
+                        ] || '';
+
+                      const choiceGroup =
+                        getOptionGroupKey(subject);
+
+                      const selectedChoiceId =
+                        choiceGroup
+                          ? selectedChoiceByGroup[choiceGroup]
+                          : null;
+
+                      const electiveLocked =
+                        Boolean(
+                          choiceGroup &&
+                          selectedChoiceId &&
+                          String(selectedChoiceId) !== String(subjectId)
+                        );
+
+                      const section = getAssignmentSection(subject);
+                      const previousSection =
+                        subjectIndex > 0
+                          ? getAssignmentSection(visibleSubjects[subjectIndex - 1])
+                          : null;
+                      const sectionChanged = section !== previousSection;
+                      const sectionMeta = assignmentSectionMeta[section];
 
                       return (
-                        <tr
+                        <React.Fragment key={subjectId}>
+                          {sectionChanged && (
+                            <tr>
+                              <td
+                                colSpan={6}
+                                style={{
+                                  padding: '10px 14px',
+                                  background: '#F8FAFC',
+                                  borderTop: '1px solid #E2E8F0',
+                                  borderBottom: '1px solid #E2E8F0',
+                                  color: sectionMeta?.tone || '#475569',
+                                  fontSize: '0.72rem',
+                                  fontWeight: '900',
+                                  letterSpacing: '0.04em',
+                                }}
+                              >
+                                {sectionMeta?.title || section}
+                              </td>
+                            </tr>
+                          )}
+                          <tr
                           key={
                             subjectId
+                          }
+                          style={
+                            electiveLocked
+                              ? {
+                                  opacity: 0.58,
+                                  background: '#F8FAFC',
+                                }
+                              : undefined
                           }
                         >
                           <td>
@@ -2939,122 +3974,85 @@ export default function TimetableDashboardScreen() {
                           </td>
 
                           <td>
-                            <select
-                              className="form-select"
-                              style={{
-                                minWidth:
-                                  '280px',
-                              }}
-                              value={
-                                selectedFaculty
-                              }
-                              onChange={(
-                                e
-                              ) =>
-                                handleFacultyChange(
-                                  subject,
-                                  e
-                                    .target
-                                    .value
-                                )
-                              }
-                            >
-                              <option value="">
-                                Select {primaryComponent} Main Faculty
-                              </option>
+                            {isSpecialActivity(subject) ? (
+                              <div style={{
+                                padding: '10px 12px',
+                                borderRadius: '8px',
+                                background: '#FEF3C7',
+                                color: '#92400E',
+                                fontSize: '0.72rem',
+                                fontWeight: '800',
+                              }}>
+                                Saturday full-day activity — no faculty assignment required
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '320px' }}>
+                                {getTeachingComponents(subject).map((component) => {
+                                  const selected = getComponentFaculty(subject, component, 'Main');
+                                  const hours = getComponentHours(subject, component);
+                                  return (
+                                    <div key={component} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span style={{ minWidth: '78px', fontSize: '0.7rem', fontWeight: '800', color: component === 'Lab' ? '#0F766E' : '#475569' }}>
+                                        {component} ({hours}h)
+                                      </span>
+                                      <select
+                                        className="form-select"
+                                        style={{ minWidth: '250px' }}
+                                        value={selected}
+                                        disabled={electiveLocked || assignmentSaving}
+                                        onChange={(e) => handleComponentFacultyChange(subject, component, e.target.value, 'Main')}
+                                      >
+                                        <option value="">Select {component} Main Faculty</option>
+                                        {getAssignableFaculty().map((faculty) => (
+                                          <option key={getFacultyId(faculty)} value={getFacultyId(faculty)}>
+                                            {getFacultyName(faculty)}
+                                            {getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
+                                          </option>
+                                        ))}
+                                      </select>
 
-                              {getAssignableFaculty().map(
-                                (
-                                  faculty
-                                ) => (
-                                  <option
-                                    key={getFacultyId(
-                                      faculty
-                                    )}
-                                    value={getFacultyId(
-                                      faculty
-                                    )}
-                                  >
-                                    {getFacultyName(
-                                      faculty
-                                    )}
+                                      {component === 'Lab' && (
+                                        <select
+                                          className="form-select"
+                                          style={{ minWidth: '230px' }}
+                                          value={getComponentFaculty(subject, 'Lab', 'Co')}
+                                          disabled={electiveLocked || !selected || assignmentSaving}
+                                          onChange={(e) => handleComponentFacultyChange(subject, 'Lab', e.target.value, 'Co')}
+                                        >
+                                          <option value="">No Co-Faculty</option>
+                                          {getAssignableFaculty()
+                                            .filter((faculty) => String(getFacultyId(faculty)) !== String(selected))
+                                            .map((faculty) => (
+                                              <option
+                                                key={`co-${getFacultyId(faculty)}`}
+                                                value={getFacultyId(faculty)}
+                                              >
+                                                Co: {getFacultyName(faculty)}
+                                                {getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
+                                              </option>
+                                            ))}
+                                        </select>
+                                      )}
+                                    </div>
+                                  );
+                                })}
 
-                                    {getFacultyRole(
-                                      faculty
-                                    )
-                                      ? ` — ${getFacultyRole(
-                                          faculty
-                                        )}`
-                                      : ''}
-                                  </option>
-                                )
-                              )}
-                            </select>
+                                {choiceGroup && selectedChoiceId && !electiveLocked && (
+                                  <button type="button" onClick={() => clearElectiveSelection(choiceGroup)} style={{ marginTop: '2px', border: 'none', background: 'transparent', color: '#0F766E', fontSize: '0.68rem', fontWeight: '800', cursor: 'pointer', padding: 0, textAlign: 'left' }}>
+                                    Change elective selection
+                                  </button>
+                                )}
 
-                            {getSubjectComponents(subject).includes('Lab') && (
-                              <div style={{ marginTop: '8px' }}>
-                                <div style={{ fontSize: '0.7rem', fontWeight: '800', color: '#475569', marginBottom: '4px' }}>
-                                  Lab — {getSubjectComponents(subject).includes('Theory') ? 'Main' : 'Main'} Faculty
-                                </div>
-                                <select
-                                  className="form-select"
-                                  value={getComponentAssignment(subjectId, 'Lab').main || ''}
-                                  onChange={(e) => handleComponentFacultyChange(subject, 'Lab', 'main', e.target.value)}
-                                >
-                                  <option value="">Select Lab Main Faculty</option>
-                                  {getAssignableFaculty().map((faculty) => (
-                                    <option key={getFacultyId(faculty)} value={getFacultyId(faculty)}>
-                                      {getFacultyName(faculty)}{getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
-                                    </option>
-                                  ))}
-                                </select>
-                                <div style={{ fontSize: '0.7rem', fontWeight: '800', color: '#475569', margin: '6px 0 4px' }}>
-                                  Lab — Co Faculty (optional)
-                                </div>
-                                <select
-                                  className="form-select"
-                                  value={getComponentAssignment(subjectId, 'Lab').co || ''}
-                                  onChange={(e) => handleComponentFacultyChange(subject, 'Lab', 'co', e.target.value)}
-                                >
-                                  <option value="">No Co Faculty</option>
-                                  {getAssignableFaculty().map((faculty) => (
-                                    <option key={getFacultyId(faculty)} value={getFacultyId(faculty)}>
-                                      {getFacultyName(faculty)}{getFacultyRole(faculty) ? ` — ${getFacultyRole(faculty)}` : ''}
-                                    </option>
-                                  ))}
-                                </select>
+                                {electiveLocked && (
+                                  <div style={{ fontSize: '0.68rem', color: '#64748B', fontWeight: '700' }}>
+                                    Locked — another {String(getCourseCategory(subject)).toUpperCase()} option is selected.
+                                  </div>
+                                )}
                               </div>
                             )}
-
-                            {selectedFaculty && (() => {
-                              const selected = facultyList.find(
-                                (item) => String(getFacultyId(item)) === String(selectedFaculty)
-                              );
-                              if (!selected) return null;
-
-                              const id = String(getFacultyId(selected));
-                              const current = projectedFacultyWorkload[id] ?? 0;
-                              const max = getFacultyMaxWorkload(selected);
-                              const exceeded = max > 0 && current > max;
-
-                              return (
-                                <div
-                                  style={{
-                                    marginTop: '5px',
-                                    fontSize: '0.68rem',
-                                    color: exceeded ? '#B91C1C' : '#64748B',
-                                    fontWeight: '700',
-                                  }}
-                                >
-                                  Workload: {current}h{max > 0 ? ` / ${max}h` : ''}
-                                  {exceeded ? ' — limit exceeded' : ''}
-                                </div>
-                              );
-                            })()}
                           </td>
-
                           <td>
-                            {subjectHasRequiredAssignments(subject) ? (
+                            {isSpecialActivity(subject) || getTeachingComponents(subject).every((component) => Boolean(getComponentFaculty(subject, component, 'Main'))) ? (
                               <span className="badge badge-active">
                                 <CheckCircle2
                                   size={
@@ -3083,6 +4081,7 @@ export default function TimetableDashboardScreen() {
                             )}
                           </td>
                         </tr>
+                        </React.Fragment>
                       );
                     }
                   )}
@@ -3136,11 +4135,11 @@ export default function TimetableDashboardScreen() {
             >
               <button
                 className="btn-secondary"
-                onClick={() =>
-                  setFacultyAssignments(
-                    {}
-                  )
-                }
+                onClick={() => {
+                  setFacultyAssignments({});
+                  setComponentAssignments({});
+                  setMessage('Current faculty selections cleared.');
+                }}
               >
                 <Trash2
                   size={15}
@@ -3257,7 +4256,6 @@ export default function TimetableDashboardScreen() {
                       e.target.value
                     )
                   }
-                  disabled={isFoundationSemester}
                 >
                   {departments.map(
                     (department) => {
@@ -3319,8 +4317,6 @@ export default function TimetableDashboardScreen() {
               {/* SEMESTER */}
               {renderSemesterSelector()}
 
-              {renderCycleSelector()}
-
               {/* ACADEMIC YEAR */}
               <div
                 className="form-group"
@@ -3370,6 +4366,32 @@ export default function TimetableDashboardScreen() {
                   className="form-input"
                   defaultValue="2026-07-20"
                 />
+              </div>
+
+              {/* ALTERNATIVES */}
+              <div
+                className="form-group"
+                style={{
+                  margin: 0,
+                  minWidth:
+                    '130px',
+                }}
+              >
+                <label className="form-label">
+                  Alternatives
+                </label>
+
+                <select
+                  className="form-select"
+                  value={numberOfOutputs}
+                  onChange={(e) =>
+                    setNumberOfOutputs(Number(e.target.value))
+                  }
+                >
+                  <option value={1}>1 Alternative</option>
+                  <option value={2}>2 Alternatives</option>
+                  <option value={3}>3 Alternatives</option>
+                </select>
               </div>
             </div>
 
@@ -3749,6 +4771,75 @@ export default function TimetableDashboardScreen() {
               </div>
             </div>
 
+            {/* ALTERNATIVES TABS */}
+            {generatedAlternatives.length > 1 && (
+              <div
+                className="skit-card"
+                style={{
+                  padding: '10px 16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  flexWrap: 'wrap',
+                  background: '#F8FAFC',
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: '800',
+                    color: '#334155',
+                  }}
+                >
+                  Schedule Alternatives ({generatedAlternatives.length} Generated):
+                </span>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {generatedAlternatives.map((alt) => {
+                    const active = selectedAlternativeId === alt.id;
+
+                    return (
+                      <button
+                        key={alt.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedAlternativeId(alt.id);
+                          setEntries(alt.timetable || []);
+                        }}
+                        style={{
+                          border: active
+                            ? '1px solid var(--primary)'
+                            : '1px solid #CBD5E1',
+
+                          background: active
+                            ? 'var(--primary)'
+                            : '#FFFFFF',
+
+                          color: active ? '#FFFFFF' : '#334155',
+
+                          borderRadius: '6px',
+
+                          padding: '6px 14px',
+
+                          fontSize: '0.78rem',
+
+                          fontWeight: '800',
+
+                          cursor: 'pointer',
+
+                          boxShadow: active
+                            ? '0 2px 4px rgba(0,0,0,0.08)'
+                            : 'none',
+                        }}
+                      >
+                        {alt.name || `Alternative ${alt.id}`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* LIST VIEW */}
             {activeView ===
               'list' && (
@@ -3822,9 +4913,26 @@ export default function TimetableDashboardScreen() {
                             </td>
 
                             <td>
-                              {entry.subject_code ||
-                                entry.code ||
-                                '—'}
+                              <div
+                                style={{
+                                  fontWeight: '800',
+                                  color: 'var(--primary)',
+                                  fontSize: '0.82rem',
+                                }}
+                              >
+                                {entry.subject_code || entry.code || '—'}
+                              </div>
+                              {entry.subject_name && (
+                                <div
+                                  style={{
+                                    fontSize: '0.75rem',
+                                    color: '#475569',
+                                    fontWeight: '500',
+                                  }}
+                                >
+                                  {entry.subject_name}
+                                </div>
+                              )}
                             </td>
 
                             <td>
@@ -3885,7 +4993,8 @@ export default function TimetableDashboardScreen() {
                       <th>FACULTY</th>
                       <th>DESIGNATION</th>
                       <th>WORKLOAD</th>
-                      <th>MAX</th>
+                      <th>TARGET</th>
+                      <th>REMAINING</th>
                       <th>STATUS</th>
                     </tr>
                   </thead>
@@ -3893,8 +5002,9 @@ export default function TimetableDashboardScreen() {
                     {facultyList.map((faculty) => {
                       const facultyId = String(getFacultyId(faculty));
                       const current = projectedFacultyWorkload[facultyId] ?? 0;
+                      const min = getFacultyMinWorkload(faculty);
                       const max = getFacultyMaxWorkload(faculty);
-                      const exceeded = max > 0 && current > max;
+                      const exceeded = current > max;
                       const percentage = max > 0 ? Math.round((current / max) * 100) : 0;
 
                       return (
@@ -3902,7 +5012,8 @@ export default function TimetableDashboardScreen() {
                           <td style={{ fontWeight: '800' }}>{getFacultyName(faculty)}</td>
                           <td>{getFacultyRole(faculty) || '—'}</td>
                           <td style={{ fontWeight: '800' }}>{current} hrs</td>
-                          <td>{max > 0 ? `${max} hrs` : 'Not set'}</td>
+                          <td>{min}-{max} hrs</td>
+                          <td>{Math.max(0, max - current)} hrs</td>
                           <td>
                             <span
                               className="badge"
@@ -4212,140 +5323,165 @@ export default function TimetableDashboardScreen() {
                             // -------------------------------------------------
                             // NORMAL TEACHING PERIOD
                             // -------------------------------------------------
-                            const item =
-                              slot.item;
+                            const item = slot.item;
 
                             const code =
-                              item?.subject_code ||
-                              item?.code ||
-                              '—';
+                              item?.subject_code || item?.code || '—';
+
+                            const subjectName =
+                              item?.subject_name || item?.name || '';
 
                             const faculty =
-                              item?.faculty_name ||
-                              item?.faculty ||
-                              '';
+                              item?.faculty_name || item?.faculty || '';
+
+                            const component = item?.component || '';
+                            const room = item?.room || '';
+                            const batch = item?.batch || '';
 
                             const isSelected =
                               Boolean(item) &&
-                              selectedSlot.day ===
-                                row.day &&
-                              selectedSlot.period ===
-                                `Period ${slot.period}`;
+                              selectedSlot.day === row.day &&
+                              selectedSlot.period === `Period ${slot.period}`;
 
-                            const hasEntry =
-                              Boolean(item);
+                            const hasEntry = Boolean(item);
 
                             return (
                               <div
-                                key={
-                                  `${row.day}-period-${slot.period}`
-                                }
+                                key={`${row.day}-period-${slot.period}`}
                                 className={
                                   hasEntry
                                     ? 'tt-slot-card timetable-filled-slot'
                                     : 'tt-slot-card timetable-empty-slot'
                                 }
                                 style={{
-                                  minHeight:
-                                    '50px',
-
-                                  width:
-                                    '100%',
-
-                                  boxSizing:
-                                    'border-box',
-
-                                  border:
-                                    isSelected
-                                      ? '2px solid var(--primary)'
-                                      : '1px solid #E2E8F0',
-
-                                  backgroundColor:
-                                    isSelected
-                                      ? '#E8F5E9'
-                                      : '#FFFFFF',
-
-                                  color:
-                                    '#0F172A',
-
-                                  cursor:
-                                    'pointer',
-
-                                  display:
-                                    'flex',
-
-                                  flexDirection:
-                                    'column',
-
-                                  alignItems:
-                                    'center',
-
-                                  justifyContent:
-                                    'center',
-
-                                  textAlign:
-                                    'center',
-
-                                  overflow:
-                                    'hidden',
+                                  minHeight: '60px',
+                                  width: '100%',
+                                  boxSizing: 'border-box',
+                                  border: isSelected
+                                    ? '2px solid var(--primary)'
+                                    : hasEntry
+                                    ? '1px solid #CBD5E1'
+                                    : '1px solid #E2E8F0',
+                                  backgroundColor: isSelected
+                                    ? '#E8F5E9'
+                                    : hasEntry
+                                    ? '#F8FAFC'
+                                    : '#FFFFFF',
+                                  color: '#0F172A',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  textAlign: 'center',
+                                  padding: '4px 6px',
+                                  overflow: 'hidden',
+                                  borderRadius: '6px',
+                                  transition: 'all 0.15s ease-in-out',
                                 }}
                                 onClick={() =>
-                                  setSelectedSlot(
-                                    {
-                                      day:
-                                        row.day,
-
-                                      period:
-                                        `Period ${slot.period}`,
-
-                                      subject:
-                                        code,
-                                    }
-                                  )
+                                  setSelectedSlot({
+                                    day: row.day,
+                                    period: `Period ${slot.period}`,
+                                    subject: code,
+                                  })
                                 }
                               >
-                                <div
-                                  className="tt-subject-code"
-                                  style={{
-                                    color:
-                                      hasEntry
-                                        ? 'var(--primary)'
-                                        : '#64748B',
+                                {hasEntry ? (
+                                  <>
+                                    <div
+                                      className="tt-subject-code"
+                                      style={{
+                                        color: 'var(--primary)',
+                                        fontWeight: '800',
+                                        fontSize: '0.78rem',
+                                        letterSpacing: '0.02em',
+                                        background:
+                                          component === 'Lab'
+                                            ? '#EFF6FF'
+                                            : '#F1F5F9',
+                                        padding: '2px 6px',
+                                        borderRadius: '4px',
+                                        border:
+                                          component === 'Lab'
+                                            ? '1px solid #BFDBFE'
+                                            : '1px solid #E2E8F0',
+                                        maxWidth: '100%',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                      title={code}
+                                    >
+                                      {code}
+                                    </div>
 
-                                    fontWeight:
-                                      '800',
-                                  }}
-                                >
-                                  {code}
-                                </div>
+                                    {subjectName && (
+                                      <div
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          fontWeight: '700',
+                                          color: '#334155',
+                                          marginTop: '3px',
+                                          maxWidth: '100%',
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                        title={subjectName}
+                                      >
+                                        {subjectName}
+                                      </div>
+                                    )}
 
-                                {faculty && (
+                                    {faculty && (
+                                      <div
+                                        className="tt-faculty-name"
+                                        style={{
+                                          color: '#64748B',
+                                          fontSize: '0.62rem',
+                                          fontWeight: '600',
+                                          marginTop: '2px',
+                                          maxWidth: '100%',
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap',
+                                        }}
+                                        title={faculty}
+                                      >
+                                        {faculty}
+                                      </div>
+                                    )}
+
+                                    {(room || (component === 'Lab' && batch)) && (
+                                      <div
+                                        style={{
+                                          fontSize: '0.58rem',
+                                          color: '#94A3B8',
+                                          marginTop: '1px',
+                                          fontWeight: '500',
+                                        }}
+                                      >
+                                        {component === 'Lab' && batch
+                                          ? `${batch}`
+                                          : ''}
+                                        {component === 'Lab' && batch && room
+                                          ? ` • ${room}`
+                                          : room
+                                          ? room
+                                          : ''}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
                                   <div
-                                    className="tt-faculty-name"
                                     style={{
-                                      color:
-                                        '#64748B',
-
-                                      fontSize:
-                                        '0.65rem',
-
-                                      marginTop:
-                                        '3px',
-
-                                      maxWidth:
-                                        '95%',
-
-                                      overflow:
-                                        'hidden',
-
-                                      textOverflow:
-                                        'ellipsis',
-
-                                      whiteSpace:
-                                        'nowrap',
+                                      fontSize: '0.75rem',
+                                      color: '#94A3B8',
+                                      fontWeight: '500',
                                     }}
                                   >
-                                    {faculty}
+                                    —
                                   </div>
                                 )}
                               </div>
@@ -4373,10 +5509,7 @@ export default function TimetableDashboardScreen() {
                       '8px',
                   }}
                 >
-                  ⓘ Note: Saturdays are
-                  reserved for Project work /
-                  Team based activities as per
-                  department guidelines.
+                  ⓘ Note: All weekly slots (Monday to Saturday, Periods I–VII) are fully scheduled with core academic lectures, IPCC labs, Sports/Yoga/NCC, Remedial sessions, and Project work as per SKIT department guidelines.
                 </div>
               </div>
             )}
