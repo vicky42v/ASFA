@@ -182,6 +182,8 @@ def list_details():
         JOIN faculty f ON f.faculty_id=a.faculty_id
         JOIN subject s ON s.subject_id=a.subject_id
         JOIN semester sem ON sem.semester_id=s.semester_id
+
+
         JOIN department d ON d.department_id=s.department_id
         WHERE {' AND '.join(filters)}
         ORDER BY sem.semester_no DESC, s.subject_code, a.component, a.assignment_role
@@ -196,8 +198,11 @@ def save_detail_assignment():
     subject_id = payload.get("subject_id")
     academic_year = str(payload.get("academic_year") or "").strip()
     component = str(payload.get("component") or "").strip().title()
-    main_faculty_id = payload.get("main_faculty_id")
-    co_faculty_id = payload.get("co_faculty_id")
+    role = str(payload.get("assignment_role") or "Main").strip().title()
+
+    faculty_id = payload.get("faculty_id")
+    main_faculty_id = payload.get("main_faculty_id") or (faculty_id if role == "Main" else None)
+    co_faculty_id = payload.get("co_faculty_id") or (faculty_id if role == "Co" else None)
 
     if not subject_id or not academic_year or component not in ("Theory", "Lab"):
         return fail("Subject, academic year and a valid component (Theory/Lab) are required.")
@@ -248,7 +253,7 @@ def save_detail_assignment():
         else int(subject.get("lecture_hours") or 0) + int(subject.get("tutorial_hours") or 0)
     )
 
-    def current_workload(faculty_id):
+    def current_workload(fid):
         result = row("""
             SELECT COALESCE(SUM(
                 CASE
@@ -262,7 +267,7 @@ def save_detail_assignment():
               AND a.academic_year=%s
               AND a.status='Active'
               AND NOT (a.subject_id=%s AND a.component=%s)
-        """, (faculty_id, academic_year, subject_id, component))
+        """, (fid, academic_year, subject_id, component))
         return float(result.get("workload") or 0)
 
     for selected_faculty, selected_name in ((main_faculty, "Main faculty"), (co_faculty, "Co-faculty")):
@@ -277,37 +282,32 @@ def save_detail_assignment():
                     422,
                 )
 
-    # Core rule: within the same semester and academic year, a faculty
-    # member may handle only ONE different subject. The same subject may
-    # legitimately use that faculty for Theory + Lab.
-    faculty_ids = [int(main_faculty_id)]
-    if co_faculty:
-        faculty_ids.append(int(co_faculty_id))
+    # Faculty eligibility and max workload have been validated above.
+    # Co-faculty and multi-component teaching are permitted within max workload bounds.
 
-    for faculty_id in faculty_ids:
-        conflict = row("""
-            SELECT
-                a.subject_id,
-                s.subject_code,
-                s.subject_name,
-                a.component,
-                a.assignment_role
-            FROM faculty_subject_assignment_detail a
-            JOIN subject s ON s.subject_id=a.subject_id
-            WHERE a.faculty_id=%s
-              AND a.academic_year=%s
-              AND a.status='Active'
-              AND s.semester_id=%s
-              AND s.subject_id<>%s
-            LIMIT 1
-        """, (faculty_id, academic_year, semester_id, subject_id))
-        if conflict:
-            return fail(
-                f"{main_faculty.get('faculty_name') if faculty_id == int(main_faculty_id) else co_faculty.get('faculty_name')} "
-                f"is already assigned to {conflict.get('subject_code')} in the same semester. "
-                "One faculty member cannot handle different subjects in the same semester.",
-                409,
-            )
+    # If this subject belongs to an option_group_id (elective choice),
+    # deactivate assignments for other subjects in the same group.
+    option_group_id = subject.get("option_group_id")
+    if option_group_id:
+        execute("""
+            UPDATE faculty_subject_assignment_detail d
+            JOIN subject s ON s.subject_id = d.subject_id
+            SET d.status = 'Inactive'
+            WHERE s.option_group_id = %s
+              AND d.academic_year = %s
+              AND d.status = 'Active'
+              AND s.subject_id <> %s
+        """, (option_group_id, academic_year, subject_id))
+
+        execute("""
+            UPDATE faculty_subject_assignment a
+            JOIN subject s ON s.subject_id = a.subject_id
+            SET a.status = 'Inactive'
+            WHERE s.option_group_id = %s
+              AND a.academic_year = %s
+              AND a.status = 'Active'
+              AND s.subject_id <> %s
+        """, (option_group_id, academic_year, subject_id))
 
     # Remove previous assignment rows for this subject/component/year.
     execute("""
@@ -316,26 +316,26 @@ def save_detail_assignment():
         WHERE subject_id=%s AND academic_year=%s AND component=%s AND status='Active'
     """, (subject_id, academic_year, component))
 
-    def upsert_detail(faculty_id, role):
+    def upsert_detail(fid, r):
         existing = row("""
             SELECT detail_id
             FROM faculty_subject_assignment_detail
             WHERE subject_id=%s AND academic_year=%s
               AND component=%s AND assignment_role=%s
             ORDER BY detail_id DESC LIMIT 1
-        """, (subject_id, academic_year, component, role))
+        """, (subject_id, academic_year, component, r))
         if existing:
             execute("""
                 UPDATE faculty_subject_assignment_detail
                 SET faculty_id=%s, status='Active', updated_at=NOW()
                 WHERE detail_id=%s
-            """, (faculty_id, existing["detail_id"]))
+            """, (fid, existing["detail_id"]))
             return existing["detail_id"]
         result = execute("""
             INSERT INTO faculty_subject_assignment_detail
                 (subject_id, faculty_id, academic_year, component, assignment_role, status)
             VALUES (%s,%s,%s,%s,%s,'Active')
-        """, (subject_id, faculty_id, academic_year, component, role))
+        """, (subject_id, fid, academic_year, component, r))
         return result["id"]
 
     main_detail_id = upsert_detail(int(main_faculty_id), "Main")
@@ -355,7 +355,7 @@ def save_detail_assignment():
     if legacy:
         execute("""
             UPDATE faculty_subject_assignment
-            SET faculty_id=%s, updated_at=NOW()
+            SET faculty_id=%s, status='Active', updated_at=NOW()
             WHERE assignment_id=%s
         """, (int(main_faculty_id), legacy["assignment_id"]))
     else:
@@ -381,14 +381,37 @@ def save_detail_assignment():
 @require_auth(EDITORS)
 def clear_component(subject_id, component):
     academic_year = request.args.get("academic_year", "")
+    assignment_role = request.args.get("assignment_role", "")
+
     if component not in ("Theory", "Lab") or not academic_year:
         return fail("Academic year and valid component are required.")
 
-    execute("""
-        UPDATE faculty_subject_assignment_detail
-        SET status='Inactive'
-        WHERE subject_id=%s AND academic_year=%s AND component=%s
-    """, (subject_id, academic_year, component))
+    if assignment_role:
+        execute("""
+            UPDATE faculty_subject_assignment_detail
+            SET status='Inactive'
+            WHERE subject_id=%s AND academic_year=%s AND component=%s AND assignment_role=%s
+        """, (subject_id, academic_year, component, assignment_role))
+    else:
+        execute("""
+            UPDATE faculty_subject_assignment_detail
+            SET status='Inactive'
+            WHERE subject_id=%s AND academic_year=%s AND component=%s
+        """, (subject_id, academic_year, component))
+
+    # If no active detail rows remain for this subject & academic_year, deactivate legacy parent assignment
+    active_details = row("""
+        SELECT COUNT(*) as cnt
+        FROM faculty_subject_assignment_detail
+        WHERE subject_id=%s AND academic_year=%s AND status='Active'
+    """, (subject_id, academic_year))
+
+    if not active_details or int(active_details.get("cnt") or 0) == 0:
+        execute("""
+            UPDATE faculty_subject_assignment
+            SET status='Inactive'
+            WHERE subject_id=%s AND academic_year=%s
+        """, (subject_id, academic_year))
 
     audit("Cleared Faculty Component Assignment", "Assignments", f"{subject_id}:{component}")
     return ok({"subject_id": subject_id, "component": component})

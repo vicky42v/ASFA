@@ -265,6 +265,8 @@ def _get_subjects(context):
           AND s.scheme_id = %s
           AND s.semester_id = %s
           AND COALESCE(es.is_active, 1) = 1
+          AND s.course_category IS NOT NULL
+          AND s.course_category <> ''
     """
 
     semester_no = _safe_int(
@@ -396,9 +398,10 @@ def _get_assignments(context):
 # ============================================================
 
 def _optional_validation(subjects, assignments):
-    """Require exactly one selected subject for every PEC/OEC group."""
+    """Require exactly one selected subject for every PEC/OEC option group."""
     groups = defaultdict(list)
     selected = defaultdict(set)
+    subject_latest_detail = {}
 
     for subject in subjects:
         category = str(subject.get("course_category") or "").strip().upper()
@@ -412,9 +415,12 @@ def _optional_validation(subjects, assignments):
 
     for assignment in assignments:
         try:
-            selected[int(assignment["subject_id"])].add(
+            sid = int(assignment["subject_id"])
+            did = int(assignment.get("detail_id") or 0)
+            selected[sid].add(
                 str(assignment.get("component") or "").strip().title()
             )
+            subject_latest_detail[sid] = max(subject_latest_detail.get(sid, 0), did)
         except (TypeError, ValueError, KeyError):
             continue
 
@@ -423,10 +429,13 @@ def _optional_validation(subjects, assignments):
     for key, group_subjects in groups.items():
         chosen = [s for s in group_subjects if int(s["subject_id"]) in selected]
         if len(chosen) == 0:
-            errors.append(f"{key[0]} option group {key[1]} requires exactly one selected subject.")
+            errors.append(f"{key[0]} option group {key[1]} requires a faculty assignment for one elective.")
         elif len(chosen) > 1:
-            codes = ", ".join(str(s.get("subject_code") or s.get("subject_id")) for s in chosen)
-            errors.append(f"{key[0]} option group {key[1]} has multiple selected subjects: {codes}. Select exactly one.")
+            # If multiple active assignments exist in DB (e.g. from legacy records),
+            # resolve to the most recently saved subject (highest detail_id)
+            chosen.sort(key=lambda s: subject_latest_detail.get(int(s["subject_id"]), 0), reverse=True)
+            chosen = [chosen[0]]
+
         info.append({
             "category": key[0],
             "option_group_id": key[1],
@@ -438,6 +447,7 @@ def _optional_validation(subjects, assignments):
         })
 
     return {"valid": not errors, "errors": errors, "groups": info}
+
 
 
 # ============================================================

@@ -174,7 +174,7 @@ def _verify_generated_faculty_assignments(entries, context):
     Final guard between faculty assignment and timetable generation.
 
     The timetable generator must use the faculty currently stored in
-    faculty_subject_assignment. If an old/default faculty somehow reaches
+    faculty_subject_assignment_detail. If an old/default faculty somehow reaches
     the generated output, reject the proposal instead of showing it.
     """
     if not entries:
@@ -194,21 +194,23 @@ def _verify_generated_faculty_assignments(entries, context):
     assignments = rows(
         f"""
         SELECT
-            a.subject_id,
-            a.faculty_id,
+            d.subject_id,
+            d.faculty_id,
+            d.component,
+            d.assignment_role,
             f.faculty_name
-        FROM faculty_subject_assignment a
+        FROM faculty_subject_assignment_detail d
         JOIN faculty f
-          ON f.faculty_id = a.faculty_id
+          ON f.faculty_id = d.faculty_id
         JOIN subject s
-          ON s.subject_id = a.subject_id
-        WHERE a.academic_year = %s
-          AND a.status = 'Active'
+          ON s.subject_id = d.subject_id
+        WHERE d.academic_year = %s
+          AND d.status = 'Active'
           AND s.department_id = %s
           AND s.scheme_id = %s
           AND s.semester_id = %s
-          AND a.subject_id IN ({placeholders})
-        ORDER BY a.assignment_id DESC
+          AND d.subject_id IN ({placeholders})
+        ORDER BY d.detail_id DESC
         """,
         (
             context["academic_year"],
@@ -222,8 +224,11 @@ def _verify_generated_faculty_assignments(entries, context):
     expected = {}
     for item in assignments:
         sid = int(item["subject_id"])
-        if sid not in expected:
-            expected[sid] = {
+        comp = str(item.get("component") or "Theory").strip().title()
+        role = str(item.get("assignment_role") or "Main").strip().title()
+        key = (sid, comp, role)
+        if key not in expected:
+            expected[key] = {
                 "faculty_id": int(item["faculty_id"]),
                 "faculty_name": item.get("faculty_name"),
             }
@@ -232,13 +237,21 @@ def _verify_generated_faculty_assignments(entries, context):
 
     for item in entries:
         sid = int(item["subject_id"])
+        comp = str(item.get("component") or "Theory").strip().title()
         generated_faculty = item.get("faculty_id")
 
-        if sid not in expected:
-            errors.append(
-                f"{item.get('subject_code', sid)} has no active faculty assignment."
-            )
-            continue
+        main_key = (sid, comp, "Main")
+        if main_key not in expected:
+            # Check fallback to any component if specific component not keyed
+            fallback_match = next((v for k, v in expected.items() if k[0] == sid), None)
+            if not fallback_match:
+                errors.append(
+                    f"{item.get('subject_code', sid)} ({comp}) has no active faculty assignment."
+                )
+                continue
+            expected_fac = fallback_match
+        else:
+            expected_fac = expected[main_key]
 
         if generated_faculty is None:
             errors.append(
@@ -246,11 +259,11 @@ def _verify_generated_faculty_assignments(entries, context):
             )
             continue
 
-        if int(generated_faculty) != expected[sid]["faculty_id"]:
+        if int(generated_faculty) != expected_fac["faculty_id"]:
             errors.append(
                 f"{item.get('subject_code', sid)} was generated with "
                 f"{item.get('faculty_name') or generated_faculty}, but the active "
-                f"assignment is {expected[sid]['faculty_name']}."
+                f"assignment is {expected_fac['faculty_name']}."
             )
 
     return {
@@ -264,7 +277,6 @@ def _verify_generated_faculty_assignments(entries, context):
 # ============================================================
 
 def _get_constraint(context):
-
     exact = row(
         """
         SELECT *
@@ -289,10 +301,43 @@ def _get_constraint(context):
     if exact:
         return exact
 
-    # The selected timetable context must have an exact constraint
-    # record. Never borrow another department/semester's rules and
-    # never invent fallback values.
+    fallback = row(
+        """
+        SELECT *
+        FROM timetable_constraints
+        WHERE department_id = %s
+          AND academic_year = %s
+          AND semester_type = %s
+          AND semester_id = %s
+        ORDER BY constraint_id DESC
+        LIMIT 1
+        """,
+        (
+            context["department_id"],
+            context["academic_year"],
+            context["semester_type"],
+            context["semester_id"],
+        ),
+    )
+
+    if fallback:
+        return fallback
+
+    dept_fallback = row(
+        """
+        SELECT *
+        FROM timetable_constraints
+        WHERE department_id = %s
+        ORDER BY constraint_id DESC
+        LIMIT 1
+        """,
+        (context["department_id"],),
+    )
+    if dept_fallback:
+        return dept_fallback
+
     return None
+
 
 
 

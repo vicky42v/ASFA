@@ -1018,29 +1018,47 @@ def validate_entries(entries, constraints=None, context=None):
                     })
                     break
 
-        for _idx, day, period, _item in lab_rows:
-            if periods_per_day and period > periods_per_day:
-                conflicts.append({
-                    "type": "lab_period_violation",
-                    "subject_id": subject_id,
-                    "message": "Lab block extends beyond the configured periods per day.",
-                })
-            if short_break and period == short_break:
-                conflicts.append({
-                    "type": "lab_crosses_short_break",
-                    "subject_id": subject_id,
-                    "day": day,
-                    "periods": [period, period + 1],
-                    "message": "Lab block cannot start at the configured short-break boundary.",
-                })
-            if lunch and period == lunch:
-                conflicts.append({
-                    "type": "lab_crosses_lunch",
-                    "subject_id": subject_id,
-                    "day": day,
-                    "periods": [period, period + 1],
-                    "message": "Lab block cannot start at the configured lunch boundary.",
-                })
+        for day, day_rows in by_day.items():
+            periods = sorted([period for _idx, period, _item in day_rows])
+            # Check 2-period contiguous blocks
+            for i in range(0, len(periods), 2):
+                block_periods = periods[i:i+2]
+                if len(block_periods) == 2:
+                    p_start, p_end = block_periods[0], block_periods[1]
+                    if p_end != p_start + 1:
+                        conflicts.append({
+                            "type": "lab_not_contiguous",
+                            "subject_id": subject_id,
+                            "day": day,
+                            "message": f"Lab {code} must use contiguous periods (got periods {p_start} and {p_end}).",
+                        })
+                    if short_break and (p_start <= short_break < p_end):
+                        conflicts.append({
+                            "type": "lab_crosses_short_break",
+                            "subject_id": subject_id,
+                            "day": day,
+                            "periods": [p_start, p_end],
+                            "message": f"Lab block {code} cannot span across the short break (periods {p_start}-{p_end}).",
+                        })
+                    if lunch and (p_start <= lunch < p_end):
+                        conflicts.append({
+                            "type": "lab_crosses_lunch",
+                            "subject_id": subject_id,
+                            "day": day,
+                            "periods": [p_start, p_end],
+                            "message": f"Lab block {code} cannot span across lunch (periods {p_start}-{p_end}).",
+                        })
+                elif len(block_periods) == 1:
+                    p = block_periods[0]
+                    if periods_per_day and p > periods_per_day:
+                        conflicts.append({
+                            "type": "lab_period_violation",
+                            "subject_id": subject_id,
+                            "day": day,
+                            "message": f"Lab block {code} extends beyond periods per day.",
+                        })
+
+
 
     # =========================================================
     # DATABASE-BACKED ASSIGNMENT / CYCLE CHECKS
