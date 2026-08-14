@@ -6,7 +6,10 @@ import { Doughnut } from 'react-chartjs-2';
 export default function SubjectsScreen() {
   const [subjects, setSubjects] = useState([]);
   const [search, setSearch] = useState('');
-  const loadSubjects = () => { subjectApi.list().then(setSubjects).catch(() => setSubjects([])); };
+  const loadSubjects = () => { subjectApi.list().then((data) => {
+    const rows = Array.isArray(data) ? data : data?.subjects || data?.items || data?.rows || data?.data || [];
+    setSubjects(Array.isArray(rows) ? rows : []);
+  }).catch(() => setSubjects([])); };
   useEffect(() => { loadSubjects(); }, []);
 
   const handleDeactivate = async (id, name) => {
@@ -20,15 +23,23 @@ export default function SubjectsScreen() {
   };
 
   const filtered = subjects.filter(s => 
-    (s.code || '').toLowerCase().includes(search.toLowerCase()) || 
-    (s.name || '').toLowerCase().includes(search.toLowerCase()) ||
-    (s.department || '').toLowerCase().includes(search.toLowerCase())
+    (s.subject_code || s.code || '').toLowerCase().includes(search.toLowerCase()) || 
+    (s.subject_name || s.name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (s.department || s.department_name || '').toLowerCase().includes(search.toLowerCase())
   );
+
+  const typeOf = (subject) => {
+    const theory = Number(subject.lecture_hours || 0) + Number(subject.tutorial_hours || 0);
+    const lab = Number(subject.practical_hours || 0);
+    return theory > 0 && lab > 0 ? 'IPCC' : lab > 0 ? 'Lab' : 'Theory';
+  };
+
+  const ltpOf = (subject) => subject.LTP || `${subject.lecture_hours || 0}-${subject.tutorial_hours || 0}-${subject.practical_hours || 0}`;
 
   const donutData = {
     labels: ['Theory', 'Lab'],
     datasets: [{
-      data: [subjects.filter(s => s.type === 'Theory').length, subjects.filter(s => s.type === 'Lab').length],
+      data: [subjects.filter(s => typeOf(s) === 'Theory').length, subjects.filter(s => typeOf(s) !== 'Theory').length],
       backgroundColor: ['#005E38', '#3B82F6', '#F59E0B'],
       borderWidth: 0
     }]
@@ -52,8 +63,8 @@ export default function SubjectsScreen() {
           <div className="stat-icon-wrapper"><BookOpen size={24} /></div>
           <div>
             <div className="stat-label">Theory Subjects</div>
-            <div className="stat-value">{subjects.filter(s => s.type === 'Theory').length}</div>
-            <div className="stat-subtext">69.5% of total</div>
+            <div className="stat-value">{subjects.filter(s => typeOf(s) === 'Theory').length}</div>
+            <div className="stat-subtext">From imported subject hours</div>
           </div>
         </div>
 
@@ -61,8 +72,8 @@ export default function SubjectsScreen() {
           <div className="stat-icon-wrapper" style={{ background: '#F3E8FF', color: '#8B5CF6' }}><BookOpen size={24} /></div>
           <div>
             <div className="stat-label">Lab Subjects</div>
-            <div className="stat-value">{subjects.filter(s => s.type === 'Lab').length}</div>
-            <div className="stat-subtext">25.0% of total</div>
+            <div className="stat-value">{subjects.filter(s => typeOf(s) !== 'Theory').length}</div>
+            <div className="stat-subtext">Includes IPCC / practical subjects</div>
           </div>
         </div>
 
@@ -108,29 +119,36 @@ export default function SubjectsScreen() {
                   <th>Sem</th>
                   <th>Type</th>
                   <th>Credit</th>
+                  <th>L-T-P</th>
+                  <th>Category / Option</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((s) => (
-                  <tr key={s.id}>
-                    <td style={{ fontWeight: '800', color: 'var(--primary)' }}>{s.code}</td>
-                    <td style={{ fontWeight: '700' }}>{s.name}</td>
-                    <td style={{ fontSize: '0.82rem' }}>{s.department}</td>
+                  <tr key={s.subject_id || s.id}>
+                    <td style={{ fontWeight: '800', color: 'var(--primary)' }}>{s.subject_code || s.code}</td>
+                    <td style={{ fontWeight: '700' }}>{s.subject_name || s.name}</td>
+                    <td style={{ fontSize: '0.82rem' }}>{s.department || s.department_name}</td>
                     <td>{s.semester_no}</td>
                     <td>
-                      <span className={s.type === 'Lab' ? 'badge badge-info' : 'badge badge-active'}>
-                        {s.type}
+                      <span className={typeOf(s) === 'Lab' ? 'badge badge-info' : 'badge badge-active'}>
+                        {typeOf(s)}
                       </span>
                     </td>
                     <td>{s.credits}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{ltpOf(s)}</td>
+                    <td style={{ fontSize: '0.75rem' }}>
+                      <div>{s.course_category || s.category || '—'}</div>
+                      {(s.option_group_id || s.optionGroupId) && <div style={{ color: '#64748B' }}>Option {s.option_group_id || s.optionGroupId}</div>}
+                    </td>
                     <td><span className={s.status === 'Inactive' ? "badge badge-gray" : "badge badge-active"}>{s.status || 'Active'}</span></td>
                     <td>
                       <div className="table-actions">
                         <button className="action-icon-btn" title="View Details"><Eye size={16} /></button>
                         <button className="action-icon-btn" title="Edit Subject"><Edit3 size={16} /></button>
-                        <button className="action-icon-btn delete" title="Deactivate Subject" onClick={() => handleDeactivate(s.id, s.name)}><Trash2 size={16} /></button>
+                        <button className="action-icon-btn delete" title="Deactivate Subject" onClick={() => handleDeactivate(s.subject_id || s.id, s.subject_name || s.name)}><Trash2 size={16} /></button>
                       </div>
                     </td>
                   </tr>
@@ -150,16 +168,14 @@ export default function SubjectsScreen() {
           </div>
 
           <div className="skit-card">
-            <div style={{ fontWeight: '800', fontSize: '0.9rem', marginBottom: '10px' }}>Recent Subjects Added</div>
+            <div style={{ fontWeight: '800', fontSize: '0.9rem', marginBottom: '10px' }}>Subjects</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.82rem' }}>
-              <div style={{ padding: '8px 10px', background: '#F8FAFC', borderRadius: '8px' }}>
-                <div style={{ fontWeight: '700' }}>Machine Learning</div>
-                <div style={{ fontSize: '0.72rem', color: '#64748B' }}>CSE - V Sem</div>
-              </div>
-              <div style={{ padding: '8px 10px', background: '#F8FAFC', borderRadius: '8px' }}>
-                <div style={{ fontWeight: '700' }}>Python Programming Lab</div>
-                <div style={{ fontSize: '0.72rem', color: '#64748B' }}>CSE - III Sem</div>
-              </div>
+              {subjects.slice(0, 2).map((subject) => (
+                <div key={subject.subject_id || subject.id} style={{ padding: '8px 10px', background: '#F8FAFC', borderRadius: '8px' }}>
+                  <div style={{ fontWeight: '700' }}>{subject.subject_name || subject.name}</div>
+                  <div style={{ fontSize: '0.72rem', color: '#64748B' }}>{subject.department || subject.department_name} - Sem {subject.semester_no}</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

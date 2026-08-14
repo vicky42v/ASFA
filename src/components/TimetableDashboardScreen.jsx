@@ -29,7 +29,7 @@ import {
   semesterApi,
 } from '../services/api';
 
-export default function TimetableDashboardScreen() {
+export default function TimetableDashboardScreen({ initialDepartmentId = '' }) {
   // =========================================================
   // MAIN VIEW
   // =========================================================
@@ -47,6 +47,7 @@ export default function TimetableDashboardScreen() {
   const [semesters, setSemesters] = useState([]);
   const [facultyList, setFacultyList] = useState([]);
   const [subjectList, setSubjectList] = useState([]);
+  const [allSubjects, setAllSubjects] = useState([]);
 
 
   const [entries, setEntries] = useState([]);
@@ -105,14 +106,17 @@ export default function TimetableDashboardScreen() {
   const [assignmentSaving, setAssignmentSaving] =
     useState(false);
 
+  const [assignmentsSavedForContext, setAssignmentsSavedForContext] =
+    useState('');
+
   // =========================================================
   // TIMETABLE STATE
   // =========================================================
 
   const [selectedSlot, setSelectedSlot] = useState({
-    day: 'Tuesday',
-    period: 'Period V (1:45 - 2:40)',
-    subject: 'Project (Team Based)',
+    day: '',
+    period: '',
+    subject: '',
   });
 
   const [isGenerating, setIsGenerating] =
@@ -202,6 +206,15 @@ export default function TimetableDashboardScreen() {
 
     return '';
   };
+
+  const assignmentContextKey = (value = context) => [
+    value.department_id || '',
+    value.scheme_id || '',
+    value.semester_id || 'all',
+    value.academic_year || '',
+    value.semester_type || '',
+    normalizeCycle(value.cycle),
+  ].join('|');
 
   const getBasicScienceDepartment = (departmentList) => {
     const list = Array.isArray(departmentList)
@@ -359,6 +372,16 @@ export default function TimetableDashboardScreen() {
   // Professor 14-16h
   // HOD 8-12h (HOD overrides designation)
   const getFacultyWorkloadBounds = (faculty) => {
+    const dbMin = Number(faculty?.min_workload);
+    const dbMax = Number(faculty?.max_workload);
+    if (Number.isFinite(dbMax) && dbMax > 0) {
+      return {
+        min: Number.isFinite(dbMin) ? dbMin : 0,
+        max: dbMax,
+        label: faculty?.designation || faculty?.role || 'Faculty',
+      };
+    }
+
     const designation = String(
       faculty?.designation ?? faculty?.faculty_designation ?? ''
     ).trim().toLowerCase();
@@ -383,8 +406,6 @@ export default function TimetableDashboardScreen() {
       return { min: 14, max: 16, label: 'Professor' };
     }
 
-    const dbMin = Number(faculty?.min_workload);
-    const dbMax = Number(faculty?.max_workload);
     return {
       min: Number.isFinite(dbMin) ? dbMin : 0,
       max: Number.isFinite(dbMax) ? dbMax : 18,
@@ -534,42 +555,15 @@ export default function TimetableDashboardScreen() {
         setSchemes(Array.isArray(schemesArray) ? schemesArray : []);
         setSemesters(Array.isArray(semestersArray) ? semestersArray : []);
         setSubjectList(Array.isArray(subjectsArray) ? subjectsArray : []);
+        setAllSubjects(Array.isArray(subjectsArray) ? subjectsArray : []);
 
         // =======================================================
 // DEFAULT DEPARTMENT + SCHEME
 // =======================================================
-// Prefer AIML as the initial department instead of relying
-// on the order returned by MySQL.
-//
-// The user can still change the department normally from
-// the existing frontend selector.
-
 const firstDepartment =
-  departmentsArray.find((department) => {
-    const code = String(
-      department?.department_code ??
-        department?.code ??
-        ''
-    )
-      .trim()
-      .toUpperCase();
-
-    const name = String(
-      department?.department_name ??
-        department?.name ??
-        department?.departmentName ??
-        ''
-    )
-      .trim()
-      .toLowerCase();
-
-    return (
-      code === 'AIML' ||
-      name.includes(
-        'artificial intelligence and machine learning'
-      )
-    );
-  }) || departmentsArray[0];
+  departmentsArray.find(
+    (department) => String(getDepartmentId(department)) === String(initialDepartmentId)
+  ) || departmentsArray[0];
 
 // Select the scheme belonging to the selected department.
 // Prefer scheme ID 1 because that is the 2022 scheme used
@@ -666,7 +660,7 @@ const firstScheme =
     };
 
     loadInitialData();
-  }, []);
+  }, [initialDepartmentId]);
 
   // =========================================================
   // RELOAD SUBJECTS FOR THE CURRENT DEPARTMENT / SEMESTER
@@ -750,12 +744,6 @@ const firstScheme =
                 String(context.department_id)
             );
           });
-
-          // If department metadata is incomplete, keep all active
-          // faculty so the admin can still assign them manually.
-          if (faculty.length === 0) {
-            faculty = allFaculty;
-          }
 
           // Only active faculty should be assignable.
           faculty = faculty.filter(
@@ -1178,14 +1166,6 @@ const firstScheme =
         });
       }
 
-      // Last safe fallback: if the API returned subjects but their
-      // semester metadata is inconsistent, show the subjects rather
-      // than blocking faculty assignment completely. The selected
-      // semester is still passed to the assignment/generation APIs.
-      if (result.length === 0 && subjectList.length > 0) {
-        result = subjectList.filter(matchesSearch);
-      }
-
       return result.sort((a, b) => {
         const semesterA = Number(
           a?.semester_no ??
@@ -1536,7 +1516,7 @@ const firstScheme =
 
       const facultyId = String(assignment.faculty_id ?? '');
       const subjectId = String(assignment.subject_id ?? '');
-      const subject = subjectList.find(
+      const subject = allSubjects.find(
         (item) => String(getSubjectId(item)) === subjectId
       );
       if (!facultyId || !subject) return;
@@ -1560,7 +1540,7 @@ const firstScheme =
       if (!currentContextSubjectIds.has(subjectId)) return;
 
       const facultyId = String(assignment.faculty_id ?? '');
-      const subject = subjectList.find(
+      const subject = allSubjects.find(
         (item) => String(getSubjectId(item)) === subjectId
       );
       const component = String(assignment.component || 'Theory');
@@ -1574,7 +1554,7 @@ const firstScheme =
 
     // Overlay unsaved Main/Co selections.
     Object.entries(componentAssignments).forEach(([subjectId, components]) => {
-      const subject = subjectList.find(
+      const subject = allSubjects.find(
         (item) => String(getSubjectId(item)) === String(subjectId)
       );
       if (!subject || !currentContextSubjectIds.has(String(subjectId))) return;
@@ -1602,7 +1582,7 @@ const firstScheme =
     allComponentAssignments,
     facultyList,
     savedComponentAssignments,
-    subjectList,
+    allSubjects,
     filteredSubjects,
     componentAssignments,
   ]);
@@ -1664,6 +1644,8 @@ const firstScheme =
 
   const clearElectiveSelection = (groupKey) => {
     if (!groupKey) return;
+
+    setAssignmentsSavedForContext('');
 
     const siblingIds = filteredSubjects
       .filter((subject) => getOptionGroupKey(subject) === groupKey)
@@ -1869,6 +1851,8 @@ const firstScheme =
 
     if (!subjectId || !component) return;
 
+    setAssignmentsSavedForContext('');
+
     const choiceGroup = getOptionGroupKey(subject);
     const selectedFacultyId = String(facultyId || '');
 
@@ -2007,6 +1991,7 @@ const firstScheme =
       setAssignmentSearch('');
       setEntries([]);
       setGeneratedSemesters({});
+      setAssignmentsSavedForContext('');
       setMessage('');
     };
 
@@ -2112,6 +2097,7 @@ const firstScheme =
       setSavedComponentAssignments([]);
       setEntries([]);
       setGeneratedSemesters({});
+      setAssignmentsSavedForContext('');
       setMessage('');
     };
 
@@ -2385,6 +2371,7 @@ const firstScheme =
       setMessage(
         'Faculty assignments saved successfully. Theory/Lab Main and optional Lab Co are synchronized.'
       );
+      setAssignmentsSavedForContext(assignmentContextKey());
     } catch (error) {
       console.error('Failed to save faculty assignments:', error);
       setMessage(
@@ -2401,6 +2388,11 @@ const firstScheme =
 
   const handleGoToGenerator =
     () => {
+      if (assignmentsSavedForContext !== assignmentContextKey()) {
+        setMessage('Save and validate the current faculty assignments before generating a timetable.');
+        return;
+      }
+
       if (
         missingOptionGroups.length >
         0
@@ -2588,11 +2580,10 @@ const firstScheme =
 
           setEntries(timetable);
 
-          setGeneratedSemesters({
-            [String(
-              semesterNo
-            )]: timetable,
-          });
+          setGeneratedSemesters((current) => ({
+            ...current,
+            [String(semesterNo)]: timetable,
+          }));
 
           if (
             result?.validation?.valid
@@ -2960,6 +2951,59 @@ const firstScheme =
         'Timetable cleared from the current view.'
       );
     };
+
+  const handleAssistantAction = async (action) => {
+    if (action === 'workload') {
+      const summary = facultyList
+        .map((faculty) => {
+          const id = String(getFacultyId(faculty));
+          return `${getFacultyName(faculty)}: ${projectedFacultyWorkload[id] ?? 0}h / ${getFacultyMaxWorkload(faculty)}h`;
+        })
+        .join('; ');
+      setMessage(summary || 'No faculty workload data is available for the selected department.');
+      return;
+    }
+
+    if (action === 'faculty') {
+      if (!selectedSlot.day || !selectedSlot.period) {
+        setMessage('Select a real timetable slot first.');
+        return;
+      }
+      const candidates = facultyList
+        .filter((faculty) => {
+          const id = String(getFacultyId(faculty));
+          return (projectedFacultyWorkload[id] ?? 0) < getFacultyMaxWorkload(faculty);
+        })
+        .slice(0, 4)
+        .map(getFacultyName);
+      setMessage(candidates.length ? `Faculty within their global workload limit for the selected slot: ${candidates.join(', ')}.` : 'No selected-department faculty member is within the configured global workload limit.');
+      return;
+    }
+
+    if (action === 'alternative') {
+      const alternatives = requiredSubjects
+        .filter((subject) => String(getSubjectId(subject)) !== String(selectedSlot.subject_id || ''))
+        .slice(0, 4)
+        .map(getSubjectCode)
+        .filter(Boolean);
+      setMessage(alternatives.length ? `Assigned subjects in this real context: ${alternatives.join(', ')}.` : 'There are no other assigned subjects in the selected context.');
+      return;
+    }
+
+    if (action === 'conflict') {
+      try {
+        const result = await timetableApi.validate({
+          ...context,
+          cycle: normalizeCycle(context.cycle),
+          entries,
+        });
+        const conflicts = result?.validation?.conflicts || result?.conflicts || [];
+        setMessage(conflicts.length ? conflicts.map((item) => item.message || item).join(' ') : 'No conflict was found in the current timetable entries.');
+      } catch (error) {
+        setMessage(error?.message || 'Conflict analysis could not be completed.');
+      }
+    }
+  };
 
   // =========================================================
   // GRID
@@ -4138,6 +4182,7 @@ const firstScheme =
                 onClick={() => {
                   setFacultyAssignments({});
                   setComponentAssignments({});
+                  setAssignmentsSavedForContext('');
                   setMessage('Current faculty selections cleared.');
                 }}
               >
@@ -4171,6 +4216,7 @@ const firstScheme =
                   handleGoToGenerator
                 }
                 disabled={
+                  assignmentsSavedForContext !== assignmentContextKey() ||
                   missingOptionGroups.length > 0 ||
                   missingAssignments.length > 0
                 }
@@ -5384,6 +5430,7 @@ const firstScheme =
                                     day: row.day,
                                     period: `Period ${slot.period}`,
                                     subject: code,
+                                    subject_id: item?.subject_id,
                                   })
                                 }
                               >
@@ -5649,6 +5696,7 @@ const firstScheme =
                     textAlign:
                       'left',
                   }}
+                  onClick={() => handleAssistantAction('faculty')}
                 >
                   🔍 Find best faculty
                   for this slot
@@ -5664,6 +5712,7 @@ const firstScheme =
                     textAlign:
                       'left',
                   }}
+                  onClick={() => handleAssistantAction('alternative')}
                 >
                   💡 Suggest alternative
                   subject
@@ -5679,6 +5728,7 @@ const firstScheme =
                     textAlign:
                       'left',
                   }}
+                  onClick={() => handleAssistantAction('workload')}
                 >
                   📊 Check faculty
                   workload
@@ -5694,6 +5744,7 @@ const firstScheme =
                     textAlign:
                       'left',
                   }}
+                  onClick={() => handleAssistantAction('conflict')}
                 >
                   ⚠️ Resolve timetable
                   conflict
@@ -5726,6 +5777,10 @@ const firstScheme =
                 </div>
 
                 {facultyList
+                  .filter((faculty) => {
+                    const id = String(getFacultyId(faculty));
+                    return (projectedFacultyWorkload[id] ?? 0) < getFacultyMaxWorkload(faculty);
+                  })
                   .slice(0, 4)
                   .map(
                     (
@@ -5782,7 +5837,7 @@ const firstScheme =
                                 '#15803D',
                             }}
                           >
-                            Available
+                            Within workload limit
                           </div>
                         </div>
 
@@ -5810,6 +5865,7 @@ const firstScheme =
                     padding:
                       '8px',
                   }}
+                  onClick={() => handleAssistantAction('faculty')}
                 >
                   Assign Subject Slot
                 </button>

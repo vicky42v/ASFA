@@ -265,8 +265,6 @@ def _get_subjects(context):
           AND s.scheme_id = %s
           AND s.semester_id = %s
           AND COALESCE(es.is_active, 1) = 1
-          AND s.course_category IS NOT NULL
-          AND s.course_category <> ''
     """
 
     semester_no = _safe_int(
@@ -358,6 +356,8 @@ def _get_assignments(context):
 
             f.faculty_name,
             f.max_workload,
+            f.designation,
+            f.role,
             f.status AS faculty_status,
 
             s.semester_id,
@@ -431,10 +431,10 @@ def _optional_validation(subjects, assignments):
         if len(chosen) == 0:
             errors.append(f"{key[0]} option group {key[1]} requires a faculty assignment for one elective.")
         elif len(chosen) > 1:
-            # If multiple active assignments exist in DB (e.g. from legacy records),
-            # resolve to the most recently saved subject (highest detail_id)
-            chosen.sort(key=lambda s: subject_latest_detail.get(int(s["subject_id"]), 0), reverse=True)
-            chosen = [chosen[0]]
+            codes = ", ".join(str(s.get("subject_code") or s["subject_id"]) for s in chosen)
+            errors.append(
+                f"{key[0]} option group {key[1]} has more than one selected elective ({codes}). Select exactly one."
+            )
 
         info.append({
             "category": key[0],
@@ -755,6 +755,7 @@ def _existing_occupied(context):
                   department_id = %s
                   AND scheme_id = %s
                   AND semester_id = %s
+                  AND COALESCE(cycle, '') = %s
               )
             """,
             (
@@ -763,6 +764,7 @@ def _existing_occupied(context):
                 context["department_id"],
                 context["scheme_id"],
                 context["semester_id"],
+                str(context.get("cycle") or ""),
             ),
         )
 
@@ -818,6 +820,7 @@ def _existing_occupied(context):
                   t.department_id = %s
                   AND t.scheme_id = %s
                   AND t.semester_id = %s
+                  AND COALESCE(t.cycle, '') = %s
               )
             """,
             (
@@ -826,6 +829,7 @@ def _existing_occupied(context):
                 context["department_id"],
                 context["scheme_id"],
                 context["semester_id"],
+                str(context.get("cycle") or ""),
             ),
         )
 
@@ -880,18 +884,76 @@ def _faculty_limits(assignments, global_weekly):
 
         if faculty_id not in limits:
 
-            if max_workload > 0:
+            designation = str(assignment.get("designation") or "").lower()
+            role = str(assignment.get("role") or "").lower()
+            if max_workload <= 0:
+                if role == "hod" or "hod" in designation or "head of department" in designation:
+                    max_workload = 12
+                elif "assistant professor" in designation:
+                    max_workload = 18
+                elif "associate professor" in designation or designation.startswith("professor"):
+                    max_workload = 16
+                else:
+                    max_workload = global_weekly
 
-                limits[faculty_id] = min(
-                    max_workload,
-                    global_weekly,
-                )
-
-            else:
-
-                limits[faculty_id] = global_weekly
+            limits[faculty_id] = min(max_workload, global_weekly)
 
     return limits
+
+
+def _global_assignment_workload_errors(academic_year):
+    """Validate actual global assignment workload before CP-SAT is invoked.
+
+    Assignment workload is yearly, not scoped to the semester currently being
+    generated.  Lab Main and Lab Co each receive the practical hours because
+    both appear as active component assignment rows.
+    """
+    totals = rows(
+        """
+        SELECT
+            d.faculty_id,
+            f.faculty_name,
+            f.designation,
+            f.role,
+            f.max_workload,
+            COALESCE(SUM(
+                CASE
+                    WHEN d.component = 'Lab' THEN COALESCE(s.practical_hours, 0)
+                    ELSE COALESCE(s.lecture_hours, 0) + COALESCE(s.tutorial_hours, 0)
+                END
+            ), 0) AS workload
+        FROM faculty_subject_assignment_detail d
+        JOIN faculty f ON f.faculty_id = d.faculty_id
+        JOIN subject s ON s.subject_id = d.subject_id
+        WHERE d.academic_year = %s
+          AND d.status = 'Active'
+        GROUP BY d.faculty_id, f.faculty_name, f.designation, f.role, f.max_workload
+        """,
+        (academic_year,),
+    )
+
+    errors = []
+    for faculty in totals:
+        maximum = _safe_int(faculty.get("max_workload"), 0)
+        designation = str(faculty.get("designation") or "").lower()
+        role = str(faculty.get("role") or "").lower()
+        if maximum <= 0:
+            if role == "hod" or "hod" in designation or "head of department" in designation:
+                maximum = 12
+            elif "assistant professor" in designation:
+                maximum = 18
+            elif "associate professor" in designation or designation.startswith("professor"):
+                maximum = 16
+            else:
+                maximum = 18
+
+        workload = float(faculty.get("workload") or 0)
+        if workload > maximum:
+            errors.append(
+                f"{faculty.get('faculty_name') or 'Faculty'} has {workload:g}h global workload, exceeding the maximum {maximum:g}h."
+            )
+
+    return errors
 
 
 # ============================================================
@@ -1065,6 +1127,12 @@ def generate(context):
         return _failure_list(
             assignment_check["errors"]
         )
+
+    global_workload_errors = _global_assignment_workload_errors(
+        context["academic_year"]
+    )
+    if global_workload_errors:
+        return _failure_list(global_workload_errors)
 
     # --------------------------------------------------------
     # WORKING DAYS / PERIODS

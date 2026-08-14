@@ -141,6 +141,14 @@ def _validate_semester_context(context):
 
     context["semester_no"] = semester_no
 
+    stored_type = str(semester.get("semester_type") or "").strip()
+    if stored_type and stored_type != str(context.get("semester_type") or "").strip():
+        return (
+            False,
+            f"Semester {semester_no} belongs to {stored_type} semester type, not {context.get('semester_type')}.",
+            semester,
+        )
+
     if semester_no in (1, 2):
 
         if not _is_basic_science(semester):

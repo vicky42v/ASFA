@@ -36,6 +36,14 @@ def workload_bounds(faculty):
 
     HOD takes precedence over designation.
     """
+    # A value explicitly configured for a faculty member is the source of
+    # truth.  The designation policy is a fallback for the imported rows
+    # where max_workload is still 0.
+    configured_min = int(faculty.get("min_workload") or 0)
+    configured_max = int(faculty.get("max_workload") or 0)
+    if configured_max > 0:
+        return configured_min, configured_max
+
     designation = str(
         faculty.get("designation") or ""
     ).strip().lower()
@@ -1735,40 +1743,6 @@ def create_assignment_internal(faculty_id, subject_id, academic_year):
             (faculty_id, subject_id),
         )
 
-    # A faculty can teach Theory + Lab of this SAME subject, but not another
-    # subject in the same semester/year.
-    conflict = row(
-        """
-        SELECT
-            s.subject_code
-        FROM faculty_subject_assignment_detail d
-        INNER JOIN subject s
-            ON s.subject_id = d.subject_id
-        WHERE
-            d.faculty_id = %s
-            AND d.academic_year = %s
-            AND d.status = 'Active'
-            AND s.semester_id = %s
-            AND d.subject_id <> %s
-        LIMIT 1
-        """,
-        (
-            faculty_id,
-            academic_year,
-            subject["semester_id"],
-            subject_id,
-        ),
-    )
-
-    if conflict:
-        return {
-            "error": (
-                "Faculty is already assigned to another subject in this "
-                f"semester ({conflict['subject_code']})."
-            ),
-            "status": 409,
-        }
-
     existing = row(
         """
         SELECT
@@ -1927,6 +1901,9 @@ def _faculty_assignment_detail_rows(
     academic_year="",
     component="",
     assignment_role="",
+    department_id="",
+    semester_id="",
+    semester_type="",
 ):
     filters = []
     params = []
@@ -1950,6 +1927,18 @@ def _faculty_assignment_detail_rows(
     if assignment_role:
         filters.append("d.assignment_role = %s")
         params.append(assignment_role)
+
+    if department_id:
+        filters.append("s.department_id = %s")
+        params.append(department_id)
+
+    if semester_id:
+        filters.append("s.semester_id = %s")
+        params.append(semester_id)
+
+    if semester_type:
+        filters.append("sem.semester_type = %s")
+        params.append(semester_type)
 
     filters.append("d.status = 'Active'")
 
@@ -2036,6 +2025,10 @@ def assignment_details():
         "",
     ).strip()
 
+    department_id = request.args.get("department_id", "").strip()
+    semester_id = request.args.get("semester_id", "").strip()
+    semester_type = request.args.get("semester_type", "").strip()
+
     if component not in (
         "",
         "Theory",
@@ -2061,6 +2054,9 @@ def assignment_details():
             academic_year=academic_year,
             component=component,
             assignment_role=assignment_role,
+            department_id=department_id,
+            semester_id=semester_id,
+            semester_type=semester_type,
         )
     )
 
@@ -2212,11 +2208,19 @@ def save_assignment_detail():
         """
         SELECT
             s.*,
+            sem.semester_no,
+            sem.semester_type,
+            d.department_name,
+            d.department_code,
             COALESCE(
                 es.is_active,
                 1
             ) AS is_active
         FROM subject s
+        INNER JOIN semester sem
+            ON sem.semester_id = s.semester_id
+        INNER JOIN department d
+            ON d.department_id = s.department_id
         LEFT JOIN entity_status es
             ON es.entity_type = 'subject'
            AND es.entity_id = s.subject_id
@@ -2236,6 +2240,16 @@ def save_assignment_detail():
             "Subject is inactive.",
             422,
         )
+
+    # Do not permit an API caller to attach a subject from another context.
+    for key in ("department_id", "scheme_id", "semester_id"):
+        requested = d.get(key)
+        if requested not in (None, "") and str(requested) != str(subject.get(key)):
+            return fail("The selected subject does not belong to the requested timetable context.", 422)
+
+    requested_type = str(d.get("semester_type") or "").strip()
+    if requested_type and requested_type != str(subject.get("semester_type") or ""):
+        return fail("The selected subject does not belong to the requested semester type.", 422)
 
     theory_hours = (
         int(subject.get("lecture_hours") or 0)
@@ -2281,6 +2295,22 @@ def save_assignment_detail():
             "Faculty member is inactive.",
             422,
         )
+
+    semester_no = int(subject.get("semester_no") or 0)
+    department_text = " ".join([
+        str(subject.get("department_name") or ""),
+        str(subject.get("department_code") or ""),
+    ]).lower()
+    is_basic_science = (
+        "science and humanities" in department_text
+        or "basic science" in department_text
+        or str(subject.get("department_code") or "").upper() in ("SH", "BSH")
+    )
+    if semester_no in (1, 2):
+        if not is_basic_science or str(faculty.get("department_id")) != str(subject.get("department_id")):
+            return fail("Semester 1 and 2 assignments must use active Basic Science faculty.", 422)
+    elif str(faculty.get("department_id")) != str(subject.get("department_id")):
+        return fail("Faculty must belong to the subject's department.", 422)
 
     # Make an explicit UI assignment eligible for this subject.
     if not row(
@@ -2346,13 +2376,55 @@ def save_assignment_detail():
                 422,
             )
 
-        if str(
-            main["faculty_id"]
-        ) == str(faculty_id):
+        if str(main["faculty_id"]) == str(faculty_id):
             return fail(
                 "Lab Main and Lab Co-Faculty must be different.",
                 422,
             )
+
+    # Selecting a subject in a real option group is the elective choice.
+    # Keep other alternatives visible in the catalog, but mark all of their
+    # component/legacy assignment rows inactive so they are never scheduled,
+    # counted toward workload, or reported as pending.
+    if assignment_role == "Main" and subject.get("option_group_id"):
+        sibling_params = (
+            subject["option_group_id"],
+            subject["department_id"],
+            subject["scheme_id"],
+            subject["semester_id"],
+            academic_year,
+            subject_id,
+        )
+        execute(
+            """
+            UPDATE faculty_subject_assignment_detail d
+            INNER JOIN subject s ON s.subject_id = d.subject_id
+            SET d.status = 'Inactive', d.updated_at = NOW()
+            WHERE s.option_group_id = %s
+              AND s.department_id = %s
+              AND s.scheme_id = %s
+              AND s.semester_id = %s
+              AND d.academic_year = %s
+              AND d.status = 'Active'
+              AND s.subject_id <> %s
+            """,
+            sibling_params,
+        )
+        execute(
+            """
+            UPDATE faculty_subject_assignment a
+            INNER JOIN subject s ON s.subject_id = a.subject_id
+            SET a.status = 'Inactive', a.updated_at = NOW()
+            WHERE s.option_group_id = %s
+              AND s.department_id = %s
+              AND s.scheme_id = %s
+              AND s.semester_id = %s
+              AND a.academic_year = %s
+              AND a.status = 'Active'
+              AND s.subject_id <> %s
+            """,
+            sibling_params,
+        )
 
     # Workload:
     # replacing an existing row must exclude that old row, otherwise

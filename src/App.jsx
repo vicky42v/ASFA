@@ -44,6 +44,7 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [timetableDepartmentId, setTimetableDepartmentId] = useState('');
   
   // Modal states
   const [isAddDeptOpen, setIsAddDeptOpen] = useState(false);
@@ -70,7 +71,7 @@ export default function App() {
           />
         );
       case 'departments':
-        return <DepartmentsScreen onOpenAddDept={() => setIsAddDeptOpen(true)} />;
+        return <DepartmentsScreen onOpenAddDept={() => setIsAddDeptOpen(true)} onSelectDepartment={(department) => { setTimetableDepartmentId(department.department_id || department.id || ''); setActiveTab('timetables'); }} />;
       case 'faculty':
         return <FacultyScreen />;
       case 'academic-years':
@@ -81,7 +82,7 @@ export default function App() {
         return <SubjectsScreen />;
       case 'timetables':
       case 'generated-timetables':
-        return <TimetableDashboardScreen />;
+        return <TimetableDashboardScreen initialDepartmentId={timetableDepartmentId} />;
       case 'reports':
         return <ReportsScreen />;
       case 'ai-chatbot':
