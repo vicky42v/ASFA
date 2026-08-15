@@ -179,11 +179,20 @@ def _validate_semester_context(context):
 
 def _verify_generated_faculty_assignments(entries, context):
     """
-    Final guard between faculty assignment and timetable generation.
+    Final source-of-truth guard.
 
-    The timetable generator must use the faculty currently stored in
-    faculty_subject_assignment_detail. If an old/default faculty somehow reaches
-    the generated output, reject the proposal instead of showing it.
+    The timetable must match the CURRENT active component-level faculty
+    assignment at the moment of generation/save.
+
+    Theory:
+        Main faculty must match Theory/Main.
+
+    Lab:
+        Main faculty must match Lab/Main.
+        If a Co faculty is generated, it must match Lab/Co.
+
+    This prevents an old generated timetable from silently using a
+    faculty member after the manual assignment was changed.
     """
     if not entries:
         return {"valid": True, "errors": []}
@@ -202,6 +211,7 @@ def _verify_generated_faculty_assignments(entries, context):
     assignments = rows(
         f"""
         SELECT
+            d.detail_id,
             d.subject_id,
             d.faculty_id,
             d.component,
@@ -214,6 +224,7 @@ def _verify_generated_faculty_assignments(entries, context):
           ON s.subject_id = d.subject_id
         WHERE d.academic_year = %s
           AND d.status = 'Active'
+          AND LOWER(COALESCE(f.status, 'Active')) = 'active'
           AND s.department_id = %s
           AND s.scheme_id = %s
           AND s.semester_id = %s
@@ -230,11 +241,25 @@ def _verify_generated_faculty_assignments(entries, context):
     )
 
     expected = {}
+
     for item in assignments:
         sid = int(item["subject_id"])
-        comp = str(item.get("component") or "Theory").strip().title()
-        role = str(item.get("assignment_role") or "Main").strip().title()
-        key = (sid, comp, role)
+        component = str(
+            item.get("component") or ""
+        ).strip().title()
+        role = str(
+            item.get("assignment_role") or ""
+        ).strip().title()
+
+        if component not in ("Theory", "Lab"):
+            continue
+
+        if role not in ("Main", "Co"):
+            continue
+
+        key = (sid, component, role)
+
+        # Latest active detail row wins.
         if key not in expected:
             expected[key] = {
                 "faculty_id": int(item["faculty_id"]),
@@ -245,33 +270,83 @@ def _verify_generated_faculty_assignments(entries, context):
 
     for item in entries:
         sid = int(item["subject_id"])
-        comp = str(item.get("component") or "Theory").strip().title()
-        generated_faculty = item.get("faculty_id")
 
-        main_key = (sid, comp, "Main")
-        if main_key not in expected:
-            # Check fallback to any component if specific component not keyed
-            fallback_match = next((v for k, v in expected.items() if k[0] == sid), None)
-            if not fallback_match:
-                errors.append(
-                    f"{item.get('subject_code', sid)} ({comp}) has no active faculty assignment."
-                )
-                continue
-            expected_fac = fallback_match
-        else:
-            expected_fac = expected[main_key]
+        component = str(
+            item.get("component") or "Theory"
+        ).strip().title()
 
-        if generated_faculty is None:
+        generated_main = item.get("faculty_id")
+        generated_co = item.get("co_faculty_id")
+
+        # ----------------------------------------------------
+        # MAIN FACULTY
+        # ----------------------------------------------------
+
+        main_key = (sid, component, "Main")
+        expected_main = expected.get(main_key)
+
+        if not expected_main:
             errors.append(
-                f"{item.get('subject_code', sid)} has no faculty in the generated timetable."
+                f"{item.get('subject_code', sid)} ({component}) "
+                f"has no active Main faculty assignment."
             )
             continue
 
-        if int(generated_faculty) != expected_fac["faculty_id"]:
+        if generated_main is None:
             errors.append(
-                f"{item.get('subject_code', sid)} was generated with "
-                f"{item.get('faculty_name') or generated_faculty}, but the active "
-                f"assignment is {expected_fac['faculty_name']}."
+                f"{item.get('subject_code', sid)} ({component}) "
+                f"has no faculty in the generated timetable."
+            )
+        elif int(generated_main) != expected_main["faculty_id"]:
+            errors.append(
+                f"{item.get('subject_code', sid)} ({component}) "
+                f"was generated with "
+                f"{item.get('faculty_name') or generated_main}, "
+                f"but the current Main assignment is "
+                f"{expected_main['faculty_name']}."
+            )
+
+        # ----------------------------------------------------
+        # CO FACULTY
+        # ----------------------------------------------------
+
+        if generated_co is not None:
+            if component != "Lab":
+                errors.append(
+                    f"{item.get('subject_code', sid)} ({component}) "
+                    f"contains a Co faculty, but Co faculty is only "
+                    f"valid for Lab components."
+                )
+                continue
+
+            co_key = (sid, "Lab", "Co")
+            expected_co = expected.get(co_key)
+
+            if not expected_co:
+                errors.append(
+                    f"{item.get('subject_code', sid)} (Lab) was generated "
+                    f"with a Co faculty, but no active Lab/Co assignment exists."
+                )
+            elif int(generated_co) != expected_co["faculty_id"]:
+                errors.append(
+                    f"{item.get('subject_code', sid)} (Lab) was generated "
+                    f"with Co faculty {item.get('co_faculty_name') or generated_co}, "
+                    f"but the current Lab/Co assignment is "
+                    f"{expected_co['faculty_name']}."
+                )
+
+        # ----------------------------------------------------
+        # MAIN AND CO CANNOT BE THE SAME
+        # ----------------------------------------------------
+
+        if (
+            generated_main is not None
+            and generated_co is not None
+            and int(generated_main) == int(generated_co)
+        ):
+            errors.append(
+                f"{item.get('subject_code', sid)} (Lab) cannot use "
+                f"the same faculty as Main and Co faculty."
             )
 
     return {
@@ -285,7 +360,13 @@ def _verify_generated_faculty_assignments(entries, context):
 # ============================================================
 
 def _get_constraint(context):
-    exact = row(
+    """Return the constraint for the exact selected timetable context.
+
+    Timetable constraints are context-specific. Never fall back to another
+    semester, scheme, or academic year because doing so can silently generate
+    a timetable with the wrong rules.
+    """
+    return row(
         """
         SELECT *
         FROM timetable_constraints
@@ -305,48 +386,6 @@ def _get_constraint(context):
             context["semester_id"],
         ),
     )
-
-    if exact:
-        return exact
-
-    fallback = row(
-        """
-        SELECT *
-        FROM timetable_constraints
-        WHERE department_id = %s
-          AND academic_year = %s
-          AND semester_type = %s
-          AND semester_id = %s
-        ORDER BY constraint_id DESC
-        LIMIT 1
-        """,
-        (
-            context["department_id"],
-            context["academic_year"],
-            context["semester_type"],
-            context["semester_id"],
-        ),
-    )
-
-    if fallback:
-        return fallback
-
-    dept_fallback = row(
-        """
-        SELECT *
-        FROM timetable_constraints
-        WHERE department_id = %s
-        ORDER BY constraint_id DESC
-        LIMIT 1
-        """,
-        (context["department_id"],),
-    )
-    if dept_fallback:
-        return dept_fallback
-
-    return None
-
-
 
 
 # ============================================================
@@ -468,7 +507,8 @@ def generate_timetable():
 
     if not constraint:
         return fail(
-            "No exact timetable_constraints record exists for the selected department, scheme, academic year, semester type and semester. Configure the real database rule before generating.",
+            "No timetable constraints are configured for the selected department/semester. "
+            "Configure timetable_constraints before generating.",
             422,
         )
 
@@ -638,6 +678,15 @@ def generate_timetable():
             continue
 
         alternative_entries = alternative.get("timetable", []) or []
+
+        alternative_assignment_guard = _verify_generated_faculty_assignments(
+            alternative_entries,
+            context,
+        )
+
+        if not alternative_assignment_guard.get("valid"):
+            continue
+
         alternative_validation = validate_entries(
             alternative_entries,
             constraint,
@@ -792,11 +841,26 @@ def validate():
     if not missing:
         constraint = _get_constraint(context)
 
+    assignment_guard = {"valid": True, "errors": []}
+
+    if not missing:
+        assignment_guard = _verify_generated_faculty_assignments(
+            entries,
+            context,
+        )
+
     result = validate_entries(
         entries,
         constraint,
         context if not missing else None,
     )
+
+    if not assignment_guard.get("valid"):
+        result = dict(result or {})
+        result["valid"] = False
+        result["errors"] = list(
+            result.get("errors") or []
+        ) + assignment_guard.get("errors", [])
 
     return ok(
         {
@@ -886,8 +950,42 @@ def save():
 
     if not constraint:
         return fail(
-            "No exact timetable_constraints record exists for the selected academic grouping. Configure the real database rule before saving.",
+            "No timetable constraints are configured for the selected academic grouping. "
+            "Configure timetable_constraints before saving.",
             422,
+        )
+
+    # A generated timetable may have been left open while the administrator
+    # changed faculty assignments. Re-check the current DB assignments before
+    # allowing the timetable to be saved.
+    assignment_guard = _verify_generated_faculty_assignments(
+        entries,
+        context,
+    )
+
+    if not assignment_guard.get("valid"):
+        message = (
+            "Timetable faculty assignments are outdated. "
+            "Generate the timetable again after the faculty assignment changes: "
+            + " ".join(assignment_guard.get("errors", []))
+        )
+
+        notify(
+            "Timetable save blocked",
+            message,
+            "warning",
+        )
+
+        return fail(
+            message,
+            422,
+            validation={
+                "valid": False,
+                "errors": assignment_guard.get("errors", []),
+                "conflicts": [],
+            },
+            conflicts=[],
+            warnings=[],
         )
 
     validation = validate_entries(

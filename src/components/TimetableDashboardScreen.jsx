@@ -321,6 +321,32 @@ export default function TimetableDashboardScreen({ initialDepartmentId = '' }) {
   };
 
   // =========================================================
+  // SUBJECT VALIDITY / LEGACY DATA FILTER
+  // =========================================================
+  // Subject 568 (legacy/inactive) and BCS717S must never enter the
+  // assignment or timetable-generation workflow. Keep this check in
+  // one place so it cannot break the React render tree.
+  const isUsableSubject = (subject) => {
+    const subjectId = String(
+      getSubjectId(subject) ?? ''
+    ).trim();
+
+    const subjectCode = String(
+      getSubjectCode(subject) ?? ''
+    ).trim().toUpperCase();
+
+    const status = String(
+      subject?.status ?? 'Active'
+    ).trim().toLowerCase();
+
+    if (subjectId === '568') return false;
+    if (subjectCode === 'BCS717S') return false;
+    if (['inactive', 'disabled', 'deleted'].includes(status)) return false;
+
+    return true;
+  };
+
+  // =========================================================
   // L-T-P
   // =========================================================
 
@@ -1138,7 +1164,9 @@ const firstScheme =
         matchesSemester(subject) &&
         matchesSearch(subject);
 
-      let result = subjectList.filter(baseFilter);
+      let result = subjectList
+        .filter(baseFilter)
+        .filter(isUsableSubject);
 
       // IMPORTANT FALLBACK:
       // Some database/API versions expose semester information only
@@ -1147,6 +1175,7 @@ const firstScheme =
       // optional fields is missing.
       if (result.length === 0) {
         result = subjectList.filter((subject) => {
+          if (!isUsableSubject(subject)) return false;
           if (!matchesSemester(subject)) return false;
           if (!matchesSearch(subject)) return false;
 
@@ -1326,6 +1355,8 @@ const firstScheme =
 
   const visibleSubjects = useMemo(() => {
     const clean = filteredSubjects.filter((subject) => {
+      if (!isUsableSubject(subject)) return false;
+
       const category = getCourseCategory(subject);
       return category !== 'Unclassified' || isSpecialActivity(subject);
     });
@@ -1378,6 +1409,11 @@ const firstScheme =
     const result = [];
 
     filteredSubjects.forEach((subject) => {
+      // Never allow inactive/legacy subjects into assignment or generation.
+      if (!isUsableSubject(subject)) {
+        return;
+      }
+
       // Sports/Yoga/NSS/NCC are institutional Saturday activities, not
       // faculty-assignment subjects. The generator reserves Saturday for them.
       if (isSpecialActivity(subject)) {
@@ -1389,19 +1425,15 @@ const firstScheme =
         return;
       }
 
-      const groupKey =
-        getOptionGroupKey(subject);
+      const groupKey = getOptionGroupKey(subject);
 
-      // PEC/OEC without a valid option group behaves
-      // like a normal subject.
+      // PEC/OEC without a valid option group behaves like a normal subject.
       if (!groupKey) {
         result.push(subject);
         return;
       }
 
-      const subjectId = String(
-        getSubjectId(subject)
-      );
+      const subjectId = String(getSubjectId(subject));
 
       if (
         facultyAssignments[subjectId] &&

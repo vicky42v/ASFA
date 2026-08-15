@@ -193,19 +193,50 @@ def list_details():
 @bp.post("/faculty-assignment-details")
 @require_auth(EDITORS)
 def save_detail_assignment():
+    """Create/update exactly one component-role assignment.
+
+    Main and Co are independent roles:
+      - Theory: Main only
+      - Lab: Main + optional Co
+
+    Saving Lab/Co must NEVER deactivate Lab/Main, and saving Main must
+    NEVER deactivate Lab/Co. The component-detail table is the source
+    of truth for timetable generation.
+
+    A Save operation may mark the first request with replace_semester=true.
+    That starts a fresh save for the selected semester only: old assignments
+    in that semester are deactivated, while assignments in other semesters
+    remain active for global workload calculation.
+    """
     payload = request.get_json(silent=True) or {}
 
     subject_id = payload.get("subject_id")
     academic_year = str(payload.get("academic_year") or "").strip()
     component = str(payload.get("component") or "").strip().title()
     role = str(payload.get("assignment_role") or "Main").strip().title()
-
     faculty_id = payload.get("faculty_id")
-    main_faculty_id = payload.get("main_faculty_id") or (faculty_id if role == "Main" else None)
-    co_faculty_id = payload.get("co_faculty_id") or (faculty_id if role == "Co" else None)
+
+    # When Save Assignments starts for a semester, the frontend sends
+    # replace_semester=true on the FIRST assignment request. This makes
+    # the selected semester behave like a fresh assignment sheet:
+    # old assignments for this semester are deactivated first, while
+    # assignments from every other semester remain untouched.
+    replace_semester = _truthy(payload.get("replace_semester"))
 
     if not subject_id or not academic_year or component not in ("Theory", "Lab"):
-        return fail("Subject, academic year and a valid component (Theory/Lab) are required.")
+        return fail(
+            "Subject, academic year and a valid component (Theory/Lab) are required.",
+            422,
+        )
+
+    if role not in ("Main", "Co"):
+        return fail("assignment_role must be Main or Co.", 422)
+
+    if role == "Co" and component != "Lab":
+        return fail("Co-faculty can only be assigned to the Lab component.", 422)
+
+    if not faculty_id:
+        return fail(f"{role} faculty is required.", 422)
 
     subject = _subject(subject_id)
     error = _validate_context_for_subject(subject, payload)
@@ -220,41 +251,52 @@ def save_detail_assignment():
             422,
         )
 
-    if not main_faculty_id:
-        return fail("Main faculty is required.", 422)
-
-    main_faculty, error = _validate_faculty(main_faculty_id, subject, "Main")
-    if error:
-        return fail(error, 422)
-    error = _validate_eligibility(main_faculty_id, subject_id)
+    selected_faculty, error = _validate_faculty(faculty_id, subject, role)
     if error:
         return fail(error, 422)
 
-    co_faculty = None
-    if co_faculty_id not in (None, "", 0, "0"):
-        if component != "Lab":
-            return fail("Co-faculty can only be assigned to the Lab component.", 422)
-        if str(main_faculty_id) == str(co_faculty_id):
-            return fail("Main faculty and Co-faculty must be different.", 422)
-        co_faculty, error = _validate_faculty(co_faculty_id, subject, "Co")
-        if error:
-            return fail(error, 422)
-        error = _validate_eligibility(co_faculty_id, subject_id)
-        if error:
-            return fail(error, 422)
+    error = _validate_eligibility(faculty_id, subject_id)
+    if error:
+        return fail(error, 422)
 
-    semester_id = subject["semester_id"]
+    # ---------------------------------------------------------
+    # CURRENT OTHER ROLE
+    # ---------------------------------------------------------
+    current_other_role = "Co" if role == "Main" else "Main"
+    other_role_row = row("""
+        SELECT faculty_id
+        FROM faculty_subject_assignment_detail
+        WHERE subject_id=%s
+          AND academic_year=%s
+          AND component=%s
+          AND assignment_role=%s
+          AND status='Active'
+        ORDER BY detail_id DESC
+        LIMIT 1
+    """, (subject_id, academic_year, component, current_other_role))
 
-    # Exact workload check. Theory contributes L+T hours; Lab contributes P hours.
-    # For a lab, Main and Co each receive the lab hours because both teach it.
+    if other_role_row and str(other_role_row.get("faculty_id")) == str(faculty_id):
+        return fail(
+            "Main faculty and Co-faculty must be different.",
+            422,
+        )
+
+    # ---------------------------------------------------------
+    # EXACT WORKLOAD CHECK
+    # ---------------------------------------------------------
     component_hours = (
         int(subject.get("practical_hours") or 0)
         if component == "Lab"
-        else int(subject.get("lecture_hours") or 0) + int(subject.get("tutorial_hours") or 0)
+        else int(subject.get("lecture_hours") or 0)
+        + int(subject.get("tutorial_hours") or 0)
     )
 
-    def current_workload(fid):
-        result = row("""
+    if replace_semester:
+        # The whole selected semester is about to be replaced. Therefore
+        # the workload check must ignore its OLD assignments and keep
+        # assignments from all other semesters. This prevents stale
+        # semester workload from blocking a valid replacement.
+        current = row("""
             SELECT COALESCE(SUM(
                 CASE
                     WHEN a.component='Lab' THEN COALESCE(s.practical_hours,0)
@@ -266,114 +308,197 @@ def save_detail_assignment():
             WHERE a.faculty_id=%s
               AND a.academic_year=%s
               AND a.status='Active'
-              AND NOT (a.subject_id=%s AND a.component=%s)
-        """, (fid, academic_year, subject_id, component))
-        return float(result.get("workload") or 0)
+              AND NOT (
+                  s.department_id=%s
+                  AND s.scheme_id=%s
+                  AND s.semester_id=%s
+              )
+        """, (
+            faculty_id,
+            academic_year,
+            subject.get("department_id"),
+            subject.get("scheme_id"),
+            subject.get("semester_id"),
+        ))
+    else:
+        # Normal subsequent request in the same Save operation: only
+        # replace the exact component/role being written.
+        current = row("""
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN a.component='Lab' THEN COALESCE(s.practical_hours,0)
+                    ELSE COALESCE(s.lecture_hours,0) + COALESCE(s.tutorial_hours,0)
+                END
+            ),0) AS workload
+            FROM faculty_subject_assignment_detail a
+            JOIN subject s ON s.subject_id=a.subject_id
+            WHERE a.faculty_id=%s
+              AND a.academic_year=%s
+              AND a.status='Active'
+              AND NOT (
+                  a.subject_id=%s
+                  AND a.component=%s
+                  AND a.assignment_role=%s
+              )
+        """, (faculty_id, academic_year, subject_id, component, role))
 
-    for selected_faculty, selected_name in ((main_faculty, "Main faculty"), (co_faculty, "Co-faculty")):
-        if not selected_faculty:
-            continue
-        maximum = float(selected_faculty.get("max_workload") or 0)
-        if maximum > 0:
-            projected = current_workload(int(selected_faculty["faculty_id"])) + component_hours
-            if projected > maximum:
-                return fail(
-                    f"{selected_faculty.get('faculty_name')} would have {projected:g} hours, exceeding the configured maximum of {maximum:g} hours.",
-                    422,
-                )
+    maximum = float(selected_faculty.get("max_workload") or 0)
+    projected = float(current.get("workload") or 0) + component_hours
+    if maximum > 0 and projected > maximum:
+        return fail(
+            f"{selected_faculty.get('faculty_name')} would have {projected:g} hours, "
+            f"exceeding the configured maximum of {maximum:g} hours.",
+            422,
+        )
 
-    # Faculty eligibility and max workload have been validated above.
-    # Co-faculty and multi-component teaching are permitted within max workload bounds.
+    # ---------------------------------------------------------
+    # FRESH SEMESTER SAVE
+    # ---------------------------------------------------------
+    # This runs only for the first assignment request of a Save
+    # operation. It clears the selected department/scheme/semester
+    # from both assignment tables, but never touches another semester.
+    if replace_semester:
+        execute("""
+            UPDATE faculty_subject_assignment_detail d
+            JOIN subject s ON s.subject_id=d.subject_id
+            SET d.status='Inactive', d.updated_at=NOW()
+            WHERE d.academic_year=%s
+              AND d.status='Active'
+              AND s.department_id=%s
+              AND s.scheme_id=%s
+              AND s.semester_id=%s
+        """, (
+            academic_year,
+            subject.get("department_id"),
+            subject.get("scheme_id"),
+            subject.get("semester_id"),
+        ))
 
-    # If this subject belongs to an option_group_id (elective choice),
-    # deactivate assignments for other subjects in the same group.
+        execute("""
+            UPDATE faculty_subject_assignment a
+            JOIN subject s ON s.subject_id=a.subject_id
+            SET a.status='Inactive', a.updated_at=NOW()
+            WHERE a.academic_year=%s
+              AND a.status='Active'
+              AND s.department_id=%s
+              AND s.scheme_id=%s
+              AND s.semester_id=%s
+        """, (
+            academic_year,
+            subject.get("department_id"),
+            subject.get("scheme_id"),
+            subject.get("semester_id"),
+        ))
+
+    # ---------------------------------------------------------
+    # OPTION GROUP: only one subject in a PEC/OEC group can remain active.
+    # ---------------------------------------------------------
     option_group_id = subject.get("option_group_id")
     if option_group_id:
         execute("""
             UPDATE faculty_subject_assignment_detail d
-            JOIN subject s ON s.subject_id = d.subject_id
-            SET d.status = 'Inactive'
-            WHERE s.option_group_id = %s
-              AND d.academic_year = %s
-              AND d.status = 'Active'
-              AND s.subject_id <> %s
+            JOIN subject s ON s.subject_id=d.subject_id
+            SET d.status='Inactive', d.updated_at=NOW()
+            WHERE s.option_group_id=%s
+              AND d.academic_year=%s
+              AND d.status='Active'
+              AND s.subject_id<>%s
         """, (option_group_id, academic_year, subject_id))
 
         execute("""
             UPDATE faculty_subject_assignment a
-            JOIN subject s ON s.subject_id = a.subject_id
-            SET a.status = 'Inactive'
-            WHERE s.option_group_id = %s
-              AND a.academic_year = %s
-              AND a.status = 'Active'
-              AND s.subject_id <> %s
+            JOIN subject s ON s.subject_id=a.subject_id
+            SET a.status='Inactive', a.updated_at=NOW()
+            WHERE s.option_group_id=%s
+              AND a.academic_year=%s
+              AND a.status='Active'
+              AND s.subject_id<>%s
         """, (option_group_id, academic_year, subject_id))
 
-    # Remove previous assignment rows for this subject/component/year.
+    # ---------------------------------------------------------
+    # DEACTIVATE ONLY THE ROLE BEING REPLACED.
+    # ---------------------------------------------------------
     execute("""
         UPDATE faculty_subject_assignment_detail
-        SET status='Inactive'
-        WHERE subject_id=%s AND academic_year=%s AND component=%s AND status='Active'
-    """, (subject_id, academic_year, component))
+        SET status='Inactive', updated_at=NOW()
+        WHERE subject_id=%s
+          AND academic_year=%s
+          AND component=%s
+          AND assignment_role=%s
+          AND status='Active'
+    """, (subject_id, academic_year, component, role))
 
-    def upsert_detail(fid, r):
-        existing = row("""
-            SELECT detail_id
-            FROM faculty_subject_assignment_detail
-            WHERE subject_id=%s AND academic_year=%s
-              AND component=%s AND assignment_role=%s
-            ORDER BY detail_id DESC LIMIT 1
-        """, (subject_id, academic_year, component, r))
-        if existing:
-            execute("""
-                UPDATE faculty_subject_assignment_detail
-                SET faculty_id=%s, status='Active', updated_at=NOW()
-                WHERE detail_id=%s
-            """, (fid, existing["detail_id"]))
-            return existing["detail_id"]
+    # Re-use the newest historical row for this exact role when possible.
+    existing = row("""
+        SELECT detail_id
+        FROM faculty_subject_assignment_detail
+        WHERE subject_id=%s
+          AND academic_year=%s
+          AND component=%s
+          AND assignment_role=%s
+        ORDER BY detail_id DESC
+        LIMIT 1
+    """, (subject_id, academic_year, component, role))
+
+    if existing:
+        execute("""
+            UPDATE faculty_subject_assignment_detail
+            SET faculty_id=%s,
+                status='Active',
+                updated_at=NOW()
+            WHERE detail_id=%s
+        """, (int(faculty_id), existing["detail_id"]))
+        detail_id = existing["detail_id"]
+    else:
         result = execute("""
             INSERT INTO faculty_subject_assignment_detail
                 (subject_id, faculty_id, academic_year, component, assignment_role, status)
             VALUES (%s,%s,%s,%s,%s,'Active')
-        """, (subject_id, fid, academic_year, component, r))
-        return result["id"]
+        """, (subject_id, int(faculty_id), academic_year, component, role))
+        detail_id = result["id"]
 
-    main_detail_id = upsert_detail(int(main_faculty_id), "Main")
-    co_detail_id = None
-    if co_faculty:
-        co_detail_id = upsert_detail(int(co_faculty_id), "Co")
+    # ---------------------------------------------------------
+    # LEGACY PARENT TABLE
+    # It represents the subject's Main faculty only.
+    # Never overwrite it when saving a Co faculty.
+    # ---------------------------------------------------------
+    if role == "Main":
+        legacy = row("""
+            SELECT assignment_id
+            FROM faculty_subject_assignment
+            WHERE subject_id=%s
+              AND academic_year=%s
+            ORDER BY (status='Active') DESC, assignment_id DESC
+            LIMIT 1
+        """, (subject_id, academic_year))
 
-    # Keep the legacy table synchronized with the main faculty so old
-    # screens continue to work. The generator no longer depends on it.
-    legacy = row("""
-        SELECT assignment_id
-        FROM faculty_subject_assignment
-        WHERE subject_id=%s AND academic_year=%s AND status='Active'
-        ORDER BY assignment_id DESC LIMIT 1
-    """, (subject_id, academic_year))
+        if legacy:
+            execute("""
+                UPDATE faculty_subject_assignment
+                SET faculty_id=%s,
+                    status='Active',
+                    updated_at=NOW()
+                WHERE assignment_id=%s
+            """, (int(faculty_id), legacy["assignment_id"]))
+        else:
+            execute("""
+                INSERT INTO faculty_subject_assignment
+                    (faculty_id, subject_id, academic_year, status)
+                VALUES (%s,%s,%s,'Active')
+            """, (int(faculty_id), subject_id, academic_year))
 
-    if legacy:
-        execute("""
-            UPDATE faculty_subject_assignment
-            SET faculty_id=%s, status='Active', updated_at=NOW()
-            WHERE assignment_id=%s
-        """, (int(main_faculty_id), legacy["assignment_id"]))
-    else:
-        execute("""
-            INSERT INTO faculty_subject_assignment
-                (faculty_id, subject_id, academic_year, status)
-            VALUES (%s,%s,%s,'Active')
-        """, (int(main_faculty_id), subject_id, academic_year))
-
-    audit("Saved Faculty Component Assignment", "Assignments", str(subject_id))
+    audit(
+        "Saved Faculty Component Assignment",
+        "Assignments",
+        f"{subject_id}:{component}:{role}",
+    )
 
     return ok({
         "subject_id": int(subject_id),
         "component": component,
-        "main_faculty_id": int(main_faculty_id),
-        "co_faculty_id": int(co_faculty_id) if co_faculty else None,
-        "main_detail_id": main_detail_id,
-        "co_detail_id": co_detail_id,
+        "assignment_role": role,
+        "faculty_id": int(faculty_id),
+        "detail_id": detail_id,
     }, 201)
 
 
@@ -381,37 +506,86 @@ def save_detail_assignment():
 @require_auth(EDITORS)
 def clear_component(subject_id, component):
     academic_year = request.args.get("academic_year", "")
-    assignment_role = request.args.get("assignment_role", "")
+    assignment_role = str(request.args.get("assignment_role", "")).strip().title()
 
     if component not in ("Theory", "Lab") or not academic_year:
-        return fail("Academic year and valid component are required.")
+        return fail("Academic year and valid component are required.", 422)
+
+    if assignment_role and assignment_role not in ("Main", "Co"):
+        return fail("assignment_role must be Main or Co.", 422)
+
+    if assignment_role == "Co" and component != "Lab":
+        return fail("Co-faculty can only be cleared from the Lab component.", 422)
 
     if assignment_role:
         execute("""
             UPDATE faculty_subject_assignment_detail
-            SET status='Inactive'
-            WHERE subject_id=%s AND academic_year=%s AND component=%s AND assignment_role=%s
+            SET status='Inactive', updated_at=NOW()
+            WHERE subject_id=%s
+              AND academic_year=%s
+              AND component=%s
+              AND assignment_role=%s
         """, (subject_id, academic_year, component, assignment_role))
     else:
         execute("""
             UPDATE faculty_subject_assignment_detail
-            SET status='Inactive'
-            WHERE subject_id=%s AND academic_year=%s AND component=%s
+            SET status='Inactive', updated_at=NOW()
+            WHERE subject_id=%s
+              AND academic_year=%s
+              AND component=%s
         """, (subject_id, academic_year, component))
 
-    # If no active detail rows remain for this subject & academic_year, deactivate legacy parent assignment
-    active_details = row("""
-        SELECT COUNT(*) as cnt
+    # Rebuild the legacy parent from an ACTIVE Main assignment only.
+    # A remaining Co assignment must never keep the parent active.
+    active_main = row("""
+        SELECT faculty_id
         FROM faculty_subject_assignment_detail
-        WHERE subject_id=%s AND academic_year=%s AND status='Active'
+        WHERE subject_id=%s
+          AND academic_year=%s
+          AND assignment_role='Main'
+          AND status='Active'
+        ORDER BY detail_id DESC
+        LIMIT 1
     """, (subject_id, academic_year))
 
-    if not active_details or int(active_details.get("cnt") or 0) == 0:
+    legacy = row("""
+        SELECT assignment_id
+        FROM faculty_subject_assignment
+        WHERE subject_id=%s
+          AND academic_year=%s
+        ORDER BY assignment_id DESC
+        LIMIT 1
+    """, (subject_id, academic_year))
+
+    if active_main:
+        if legacy:
+            execute("""
+                UPDATE faculty_subject_assignment
+                SET faculty_id=%s,
+                    status='Active',
+                    updated_at=NOW()
+                WHERE assignment_id=%s
+            """, (int(active_main["faculty_id"]), legacy["assignment_id"]))
+        else:
+            execute("""
+                INSERT INTO faculty_subject_assignment
+                    (faculty_id, subject_id, academic_year, status)
+                VALUES (%s,%s,%s,'Active')
+            """, (int(active_main["faculty_id"]), subject_id, academic_year))
+    elif legacy:
         execute("""
             UPDATE faculty_subject_assignment
-            SET status='Inactive'
-            WHERE subject_id=%s AND academic_year=%s
-        """, (subject_id, academic_year))
+            SET status='Inactive', updated_at=NOW()
+            WHERE assignment_id=%s
+        """, (legacy["assignment_id"],))
 
-    audit("Cleared Faculty Component Assignment", "Assignments", f"{subject_id}:{component}")
-    return ok({"subject_id": subject_id, "component": component})
+    audit(
+        "Cleared Faculty Component Assignment",
+        "Assignments",
+        f"{subject_id}:{component}:{assignment_role or 'ALL'}",
+    )
+    return ok({
+        "subject_id": subject_id,
+        "component": component,
+        "assignment_role": assignment_role or None,
+    })

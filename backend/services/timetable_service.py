@@ -398,56 +398,128 @@ def _get_assignments(context):
 # ============================================================
 
 def _optional_validation(subjects, assignments):
-    """Require exactly one selected subject for every PEC/OEC option group."""
+    """
+    Validate PEC/OEC selection using the saved manual faculty assignment.
+
+    An elective is considered selected only when it has an active
+    component-level faculty assignment.
+
+    Rules:
+      - exactly one elective per PEC/OEC option group
+      - zero selected -> generation is rejected
+      - more than one selected -> generation is rejected
+      - unselected elective subjects do NOT require faculty assignment
+    """
     groups = defaultdict(list)
-    selected = defaultdict(set)
-    subject_latest_detail = {}
+    selected_subject_ids = set()
 
     for subject in subjects:
-        category = str(subject.get("course_category") or "").strip().upper()
+        category = str(
+            subject.get("course_category") or ""
+        ).strip().upper()
+
         group_id = subject.get("option_group_id")
+        is_optional = _truthy(subject.get("is_optional"))
+        is_elective = category in ("PEC", "OEC")
+
         if (
             group_id not in (None, "")
-            or (_truthy(subject.get("is_optional")) and category in ("PEC", "OEC"))
+            or (is_optional and is_elective)
         ):
-            key_id = str(group_id) if group_id not in (None, "") else f"opt_{subject['subject_id']}"
-            groups[(category or "ELECTIVE", key_id)].append(subject)
+            normalized_group = (
+                str(group_id)
+                if group_id not in (None, "")
+                else f"opt_{subject['subject_id']}"
+            )
 
+            groups[
+                (category or "ELECTIVE", normalized_group)
+            ].append(subject)
+
+    # Any active assignment means that subject was selected manually.
+    # Theory/Lab/Main/Co all count toward selecting the subject.
     for assignment in assignments:
         try:
-            sid = int(assignment["subject_id"])
-            did = int(assignment.get("detail_id") or 0)
-            selected[sid].add(
-                str(assignment.get("component") or "").strip().title()
+            selected_subject_ids.add(
+                int(assignment["subject_id"])
             )
-            subject_latest_detail[sid] = max(subject_latest_detail.get(sid, 0), did)
         except (TypeError, ValueError, KeyError):
             continue
 
     errors = []
     info = []
-    for key, group_subjects in groups.items():
-        chosen = [s for s in group_subjects if int(s["subject_id"]) in selected]
-        if len(chosen) == 0:
-            errors.append(f"{key[0]} option group {key[1]} requires a faculty assignment for one elective.")
-        elif len(chosen) > 1:
-            codes = ", ".join(str(s.get("subject_code") or s["subject_id"]) for s in chosen)
+
+    for (
+        category,
+        group_id,
+    ), group_subjects in groups.items():
+
+        selected = [
+            subject
+            for subject in group_subjects
+            if int(subject["subject_id"]) in selected_subject_ids
+        ]
+
+        if len(selected) == 0:
+            codes = ", ".join(
+                str(
+                    subject.get("subject_code")
+                    or subject["subject_id"]
+                )
+                for subject in group_subjects
+            )
+
             errors.append(
-                f"{key[0]} option group {key[1]} has more than one selected elective ({codes}). Select exactly one."
+                f"{category} option group {group_id} requires "
+                f"exactly one selected elective. "
+                f"Available subjects: {codes}."
+            )
+
+        elif len(selected) > 1:
+            codes = ", ".join(
+                str(
+                    subject.get("subject_code")
+                    or subject["subject_id"]
+                )
+                for subject in selected
+            )
+
+            errors.append(
+                f"{category} option group {group_id} has multiple "
+                f"selected electives: {codes}. "
+                f"Only one elective can be selected."
             )
 
         info.append({
-            "category": key[0],
-            "option_group_id": key[1],
+            "category": category,
+            "option_group_id": group_id,
             "selected_subjects": [
-                {"subject_id": s["subject_id"], "subject_code": s["subject_code"]}
-                for s in chosen
+                {
+                    "subject_id": int(subject["subject_id"]),
+                    "subject_code": subject.get("subject_code"),
+                }
+                for subject in selected
+            ],
+            "available_subjects": [
+                {
+                    "subject_id": int(subject["subject_id"]),
+                    "subject_code": subject.get("subject_code"),
+                    "subject_name": subject.get("subject_name"),
+                    "selected": (
+                        int(subject["subject_id"])
+                        in selected_subject_ids
+                    ),
+                }
+                for subject in group_subjects
             ],
             "required_selection_count": 1,
         })
 
-    return {"valid": not errors, "errors": errors, "groups": info}
-
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "groups": info,
+    }
 
 
 # ============================================================
@@ -455,30 +527,48 @@ def _optional_validation(subjects, assignments):
 # ============================================================
 
 def _selected_subjects(subjects, optional_result):
-    selected_by_group = {}
+    """
+    Keep all normal subjects and only the manually selected subject
+    from each PEC/OEC option group.
+
+    Unselected electives are intentionally removed before assignment
+    validation, so they never appear as "missing faculty" subjects.
+    """
+    selected_ids = set()
 
     for group in optional_result.get("groups", []):
-        gid = group["option_group_id"]
-        if group["selected_subjects"]:
-            # Pick the first chosen subject for this option group
-            selected_by_group[gid] = int(group["selected_subjects"][0]["subject_id"])
+        for selected in group.get("selected_subjects", []):
+            try:
+                selected_ids.add(
+                    int(selected["subject_id"])
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
 
     result = []
-    for subject in subjects:
-        group_id = str(subject.get("option_group_id") or "")
-        category = str(subject.get("course_category") or "").strip().upper()
-        is_choice = bool(group_id) or (_truthy(subject.get("is_optional")) and category in ("PEC", "OEC"))
 
-        if not is_choice:
+    for subject in subjects:
+        subject_id = int(subject["subject_id"])
+
+        category = str(
+            subject.get("course_category") or ""
+        ).strip().upper()
+
+        group_id = subject.get("option_group_id")
+        is_optional = _truthy(subject.get("is_optional"))
+        is_elective = category in ("PEC", "OEC")
+
+        is_choice_subject = (
+            group_id not in (None, "")
+            or (is_optional and is_elective)
+        )
+
+        if not is_choice_subject:
             result.append(subject)
-        else:
-            chosen_id = selected_by_group.get(group_id)
-            if chosen_id is not None:
-                if int(subject["subject_id"]) == chosen_id:
-                    result.append(subject)
-            else:
-                # If no choice made yet, keep subject so validation catches missing assignment
-                result.append(subject)
+            continue
+
+        if subject_id in selected_ids:
+            result.append(subject)
 
     return result
 
@@ -658,6 +748,21 @@ def _make_tasks(subjects, amap, days=None, periods_per_day=7):
                     })
                     remaining -= block_size
                     ordinal += 1
+
+    # Schedule the hardest blocks first.  This mirrors the useful
+    # behaviour of the friend's generator while keeping CP-SAT as
+    # the actual solver: larger lab blocks get priority, followed
+    # by other lab blocks, then theory sessions.
+    tasks.sort(
+        key=lambda task: (
+            0 if task.get("is_special") else (
+                1 if task.get("is_lab") else 2
+            ),
+            -int(task.get("block_size", 1)),
+            str(task["subject"].get("subject_code") or ""),
+            int(task.get("ordinal", 0)),
+        )
+    )
 
     return tasks
 
@@ -984,6 +1089,25 @@ def generate(context):
     context["semester_no"] = (
         semester.get("semester_no")
     )
+
+    # Do not silently generate a timetable for a different semester type
+    # than the one selected by the caller.
+    db_semester_type = str(
+        semester.get("semester_type") or ""
+    ).strip().lower()
+    requested_semester_type = str(
+        context.get("semester_type") or ""
+    ).strip().lower()
+
+    if (
+        requested_semester_type
+        and db_semester_type
+        and requested_semester_type != db_semester_type
+    ):
+        return _failure(
+            "The selected semester type does not match the semester "
+            "stored in the database."
+        )
 
     semester_no = _safe_int(
         context.get("semester_no")
