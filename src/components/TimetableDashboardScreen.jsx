@@ -17,6 +17,8 @@ import {
   Search,
   Users,
   ChevronRight,
+  RefreshCw,
+  FileText,
 } from 'lucide-react';
 
 import {
@@ -28,6 +30,9 @@ import {
   schemeApi,
   semesterApi,
 } from '../services/api';
+
+import { saveGeneratedTimetable } from '../services/timetableStorage';
+import { exportTimetableCsv, printTimetable } from '../services/timetableExport';
 
 export default function TimetableDashboardScreen({ initialDepartmentId = '' }) {
   // =========================================================
@@ -80,6 +85,7 @@ export default function TimetableDashboardScreen({ initialDepartmentId = '' }) {
   const [numberOfOutputs, setNumberOfOutputs] = useState(3);
   const [generatedAlternatives, setGeneratedAlternatives] = useState([]);
   const [selectedAlternativeId, setSelectedAlternativeId] = useState(1);
+  const [regenerateCount, setRegenerateCount] = useState(0);
 
   // =========================================================
   // ASSIGNMENT STATE
@@ -2400,10 +2406,11 @@ const firstScheme =
         ])
       );
 
-      setMessage(
-        'Faculty assignments saved successfully. Theory/Lab Main and optional Lab Co are synchronized.'
-      );
       setAssignmentsSavedForContext(assignmentContextKey());
+      setMessage(
+        'Faculty assignments saved successfully. Opening Generate Timetable...'
+      );
+      setMainView('generate');
     } catch (error) {
       console.error('Failed to save faculty assignments:', error);
       setMessage(
@@ -2418,42 +2425,130 @@ const firstScheme =
   // GO TO GENERATOR
   // =========================================================
 
-  const handleGoToGenerator =
-    () => {
-      if (assignmentsSavedForContext !== assignmentContextKey()) {
-        setMessage('Save and validate the current faculty assignments before generating a timetable.');
-        return;
-      }
+  const handleGoToGenerator = () => {
+    // Validate the CURRENT assignment state when the user clicks.
+    // Do not block the button using a stale "saved" flag.
+    if (missingOptionGroups.length > 0) {
+      setMessage(
+        `${missingOptionGroups.length} PEC/OEC option group${
+          missingOptionGroups.length === 1 ? '' : 's'
+        } still need a subject to be selected.`
+      );
+      return;
+    }
 
-      if (
-        missingOptionGroups.length >
-        0
-      ) {
-        setMessage(
-          `${missingOptionGroups.length} PEC/OEC option group${
-            missingOptionGroups.length === 1
-              ? ''
-              : 's'
-          } still need a subject to be selected.`
-        );
+    if (missingAssignments.length > 0) {
+      setMessage(
+        `${missingAssignments.length} subject(s) still need faculty assignment.`
+      );
+      return;
+    }
 
-        return;
-      }
+    // Every teaching component must have a Main faculty.
+    const missingComponents = [];
 
-      if (
-        missingAssignments.length >
-        0
-      ) {
-        setMessage(
-          `${missingAssignments.length} subject(s) still need faculty assignment.`
-        );
+    requiredSubjects.forEach((subject) => {
+      getTeachingComponents(subject).forEach((component) => {
+        if (!getComponentFaculty(subject, component, 'Main')) {
+          missingComponents.push(
+            `${getSubjectCode(subject)} ${component} Main`
+          );
+        }
+      });
+    });
 
-        return;
-      }
+    if (missingComponents.length > 0) {
+      setMessage(
+        `Assign faculty for: ${missingComponents.join(', ')}`
+      );
+      return;
+    }
 
-      setMessage('');
-      setMainView('generate');
-    };
+    // Do not allow generation while a faculty member is above max workload.
+    if (workloadExceededFaculty.length > 0) {
+      const details = workloadExceededFaculty
+        .map((faculty) => {
+          const id = String(getFacultyId(faculty));
+          return `${getFacultyName(faculty)} (${projectedFacultyWorkload[id]}h / ${getFacultyMaxWorkload(faculty)}h)`;
+        })
+        .join(', ');
+
+      setMessage(`Workload limit exceeded: ${details}.`);
+      return;
+    }
+
+    setMessage('');
+    setMainView('generate');
+  };
+
+  // =========================================================
+  // GENERATED TIMETABLE LIBRARY / REGENERATE
+  // =========================================================
+
+  const storeGeneratedAlternatives = (alternatives, semesterNo, departmentName) => {
+    (alternatives || []).forEach((alternative) => {
+      saveGeneratedTimetable({
+        title: `${departmentName || 'Department'} - Semester ${semesterNo} - ${alternative.name || `Option ${alternative.id}`}`,
+        department_id: context.department_id,
+        department_name: departmentName || '',
+        scheme_id: context.scheme_id,
+        semester_id: context.semester_id,
+        semester_no: semesterNo,
+        semester_type: context.semester_type,
+        academic_year: context.academic_year,
+        alternative_id: alternative.id,
+        entries: alternative.timetable || [],
+        validation: alternative.validation,
+        summary: alternative.summary,
+        generation_round: regenerateCount + 1,
+      });
+    });
+  };
+
+  const regenerateCurrentTimetable = async () => {
+    if (!context.semester_id) {
+      setMessage('Select a particular semester before using Regenerate.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setMessage('Generating a fresh set of timetable alternatives...');
+
+    try {
+      const selectedSemester = generationSemesters.find((semester) =>
+        String(getSemesterId(semester)) === String(context.semester_id)
+      );
+      if (!selectedSemester) throw new Error('Selected semester was not found.');
+
+      const semesterNo = getSemesterNo(selectedSemester);
+      const department = departments.find((d) => String(getDepartmentId(d)) === String(context.department_id));
+      const generationContext = {
+        ...context,
+        semester_id: getSemesterId(selectedSemester),
+        cycle: normalizeCycle(context.cycle),
+        number_of_outputs: Math.max(3, numberOfOutputs),
+        generation_seed: Date.now() + Math.floor(Math.random() * 100000000),
+        regeneration_round: regenerateCount + 1,
+      };
+
+      const result = await timetableApi.generate(generationContext);
+      const alternatives = result?.alternatives || result?.data?.alternatives || [];
+      const first = alternatives[0]?.timetable || result?.timetable || [];
+
+      setGeneratedAlternatives(alternatives);
+      setSelectedAlternativeId(alternatives[0]?.id || 1);
+      setEntries(first);
+      setRegenerateCount((value) => value + 1);
+      storeGeneratedAlternatives(alternatives, semesterNo, getDepartmentName(department));
+
+      setMessage(`Fresh alternatives generated and stored. ${alternatives.length || 1} timetable file(s) added to Generated Timetables.`);
+    } catch (error) {
+      console.error('Regeneration failed:', error);
+      setMessage(error?.message || 'Regeneration failed.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   // =========================================================
   // GENERATE ONE SEMESTER
@@ -2607,6 +2702,15 @@ const firstScheme =
           setGeneratedAlternatives(alts);
           setSelectedAlternativeId(1);
 
+          const selectedDepartment = departments.find((department) =>
+            String(getDepartmentId(department)) === String(context.department_id)
+          );
+          storeGeneratedAlternatives(
+            alts,
+            semesterNo,
+            getDepartmentName(selectedDepartment)
+          );
+
           const timetable =
             (alts.length > 0 ? alts[0].timetable : null) || result?.timetable || [];
 
@@ -2675,6 +2779,15 @@ const firstScheme =
 
             const timetable =
               result?.timetable || [];
+
+            const selectedDepartment = departments.find((department) =>
+              String(getDepartmentId(department)) === String(context.department_id)
+            );
+            storeGeneratedAlternatives(
+              result?.alternatives || [],
+              semesterNo,
+              getDepartmentName(selectedDepartment)
+            );
 
             results[
               String(
@@ -4244,14 +4357,7 @@ const firstScheme =
 
               <button
                 className="btn-primary"
-                onClick={
-                  handleGoToGenerator
-                }
-                disabled={
-                  assignmentsSavedForContext !== assignmentContextKey() ||
-                  missingOptionGroups.length > 0 ||
-                  missingAssignments.length > 0
-                }
+                onClick={handleGoToGenerator}
               >
                 Generate Timetable
 
@@ -4499,10 +4605,31 @@ const firstScheme =
                   : 'Generate Timetable'}
               </button>
 
-              <button className="btn-secondary">
-                <Download
-                  size={16}
-                />
+              <button
+                className="btn-secondary"
+                onClick={regenerateCurrentTimetable}
+                disabled={isGenerating || !context.semester_id}
+                title="Generate another fresh set without deleting the previous files"
+              >
+                <RefreshCw size={16} />
+                Regenerate
+              </button>
+
+              <button
+                className="btn-secondary"
+                onClick={() => exportTimetableCsv(entries, `timetable-sem-${getSemesterNo(semesters.find((s) => String(getSemesterId(s)) === String(context.semester_id))) || 'x'}.csv`)}
+                disabled={!entries.length}
+              >
+                <Download size={16} />
+                Export CSV
+              </button>
+
+              <button
+                className="btn-secondary"
+                onClick={() => printTimetable(entries, 'AI-ASFA Timetable')}
+                disabled={!entries.length}
+              >
+                <FileText size={16} />
                 Export PDF
               </button>
             </div>
@@ -6018,11 +6145,7 @@ const firstScheme =
         </button>
 
         <button
-          onClick={() =>
-            setMainView(
-              'generate'
-            )
-          }
+          onClick={handleGoToGenerator}
           style={{
             flex: 1,
             border:

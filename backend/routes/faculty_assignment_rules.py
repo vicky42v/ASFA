@@ -122,19 +122,6 @@ def _validate_faculty(faculty_id, subject, role):
     return faculty, None
 
 
-def _validate_eligibility(faculty_id, subject_id):
-    """Eligibility is an explicit prerequisite for a teaching assignment."""
-    if row(
-        """
-        SELECT 1 FROM faculty_subject
-        WHERE faculty_id=%s AND subject_id=%s
-        """,
-        (faculty_id, subject_id),
-    ):
-        return None
-    return "Faculty is not eligible to teach this subject. Add faculty-subject eligibility first."
-
-
 @bp.get("/faculty-assignment-details")
 @require_auth()
 def list_details():
@@ -252,10 +239,6 @@ def save_detail_assignment():
         )
 
     selected_faculty, error = _validate_faculty(faculty_id, subject, role)
-    if error:
-        return fail(error, 422)
-
-    error = _validate_eligibility(faculty_id, subject_id)
     if error:
         return fail(error, 422)
 
