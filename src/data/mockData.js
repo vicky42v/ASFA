@@ -18,7 +18,7 @@ export const quickActionsData = [
 
 export const departmentsData = [
   { id: 1, name: 'Computer Science and Engineering', code: 'CSE', hod: 'Dr. Kavitha R', totalFaculty: 28, activeTimetables: 6, status: 'Active', studentsCount: 420 },
-  { id: 2, name: 'Artificial Intelligence & Machine Learning', code: 'AI&ML', hod: 'Dr. Arjun B', totalFaculty: 18, activeTimetables: 4, status: 'Active', studentsCount: 240 },
+  { id: 2, name: 'Artificial Intelligence & Machine Learning', code: 'AI&ML', hod: 'Dr. Jayasudha K', totalFaculty: 18, activeTimetables: 4, status: 'Active', studentsCount: 240 },
   { id: 3, name: 'Electronics and Communication Engineering', code: 'ECE', hod: 'Dr. Meena S', totalFaculty: 16, activeTimetables: 3, status: 'Active', studentsCount: 300 },
   { id: 4, name: 'Information Science and Engineering', code: 'ISE', hod: 'Dr. Priya M', totalFaculty: 14, activeTimetables: 2, status: 'Active', studentsCount: 210 },
   { id: 5, name: 'Mechanical Engineering', code: 'ME', hod: 'Dr. Ramesh T', totalFaculty: 12, activeTimetables: 2, status: 'Active', studentsCount: 150 },

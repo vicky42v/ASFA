@@ -672,9 +672,27 @@ export default function FacultyScreen() {
                           style={{
                             fontSize: '0.75rem',
                             color: '#64748B',
+                            display: 'flex',
+                            gap: '6px',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
                           }}
                         >
-                          {fac.status}
+                          <span>{fac.status}</span>
+                          {fac.preferred_time && fac.preferred_time !== 'No_Preference' && (
+                            <span
+                              style={{
+                                color: 'var(--primary)',
+                                fontWeight: '700',
+                                background: '#EEF2FF',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                fontSize: '0.68rem',
+                              }}
+                            >
+                              🕒 {fac.preferred_time} ({fac.priority_percentage ?? 75}%)
+                            </span>
+                          )}
                         </div>
                       </td>
 

@@ -52,3 +52,52 @@ export function getGeneratedDepartments() {
   });
   return [...map.values()];
 }
+
+export function getTimetablesGroupedByDepartmentAndSemester() {
+  const items = listGeneratedTimetables();
+  const grouped = {};
+
+  items.forEach((item) => {
+    const deptKey = String(item.department_name || item.department_code || item.department_id || 'AIML');
+    const semKey = String(item.semester_no || item.semester || 'General');
+
+    if (!grouped[deptKey]) {
+      grouped[deptKey] = {
+        department_id: item.department_id || deptKey,
+        department_name: item.department_name || deptKey,
+        department_code: item.department_code || deptKey,
+        semesters: {},
+        totalCount: 0,
+      };
+    }
+
+    if (!grouped[deptKey].semesters[semKey]) {
+      grouped[deptKey].semesters[semKey] = [];
+    }
+
+    grouped[deptKey].semesters[semKey].push(item);
+    grouped[deptKey].totalCount += 1;
+  });
+
+  return grouped;
+}
+
+
+
+export function saveAiResolution(record) {
+  const item = {
+    id: record.id || `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    created_at: record.created_at || new Date().toISOString(),
+    type: 'ai-resolution',
+    ...record,
+  };
+
+  const items = readAll();
+  items.unshift(item);
+  writeAll(items.slice(0, 300));
+  return item;
+}
+
+export function listAiResolutions() {
+  return listGeneratedTimetables().filter((item) => item.type === 'ai-resolution');
+}

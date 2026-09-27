@@ -10,7 +10,10 @@ import AcademicYearsScreen from './components/AcademicYearsScreen';
 import SchemesScreen from './components/SchemesScreen';
 import SubjectsScreen from './components/SubjectsScreen';
 import TimetableDashboardScreen from './components/TimetableDashboardScreen';
+import GeneratedTimetablesScreen from './components/GeneratedTimetablesScreen';
 import ReportsScreen from './components/ReportsScreen';
+import AsfaRulesScreen from './components/AsfaRulesScreen';
+import TrainingModulesScreen from './components/TrainingModulesScreen';
 import AiChatbotWidget from './components/AiChatbotWidget';
 import NotificationsScreen from './components/NotificationsScreen';
 import SettingsScreen from './components/SettingsScreen';
@@ -20,6 +23,7 @@ import BackupRestoreScreen from './components/BackupRestoreScreen';
 
 import AddDepartmentModal from './components/AddDepartmentModal';
 import UploadSchemeModal from './components/UploadSchemeModal';
+import GlobalAiChatbotButton from './components/GlobalAiChatbotButton';
 import { authApi, departmentApi } from './services/api';
 
 const pageMetadata = {
@@ -31,7 +35,9 @@ const pageMetadata = {
   'subjects': { title: 'Subjects Directory', subtitle: 'Manage and organize all subjects offered by departments.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Subjects' }] },
   'timetables': { title: 'Timetable Dashboard', subtitle: 'Generate and manage department timetables with AI assistance.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Timetables' }] },
   'generated-timetables': { title: 'Generated Timetables', subtitle: 'Catalog of published department timetables.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Generated Timetables' }] },
+  'asfa-rules': { title: 'ASFA Scheduling Rules', subtitle: 'Manage institutional guidelines, AICTE constraints, and solver weights.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'ASFA Rules' }] },
   'reports': { title: 'Reports & Analytics', subtitle: 'Insights and analytics for academic scheduling.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Reports' }] },
+  'training-modules': { title: 'ASFA Training & Models', subtitle: 'Train, evaluate, and monitor ASFA intelligent scheduling models.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Training Modules' }] },
   'ai-chatbot': { title: 'AI Assistant', subtitle: 'Ask anything about the academic scheduling system.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'AI Chatbot' }] },
   'notifications': { title: 'Notifications Center', subtitle: 'System updates and administrative alerts.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Notifications' }] },
   'settings': { title: 'System Settings', subtitle: 'Manage academic rules and preferences.', bc: [{ label: 'Dashboard', action: 'dashboard' }, { label: 'Settings' }] },
@@ -45,12 +51,40 @@ export default function App() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [timetableDepartmentId, setTimetableDepartmentId] = useState('');
+  const [selectedSavedTimetable, setSelectedSavedTimetable] = useState(null);
   
   // Modal states
   const [isAddDeptOpen, setIsAddDeptOpen] = useState(false);
   const [isUploadSchemeOpen, setIsUploadSchemeOpen] = useState(false);
 
-  useEffect(() => { authApi.me().then(() => setIsAuthenticated(true)).catch(() => setIsAuthenticated(false)).finally(() => setCheckingSession(false)); }, []);
+  useEffect(() => { 
+    authApi.me().then(() => setIsAuthenticated(true)).catch(() => setIsAuthenticated(false)).finally(() => setCheckingSession(false)); 
+  }, []);
+
+  // Global Ctrl + and Ctrl - keyboard zoom listener
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === '=' || e.key === '+' || e.code === 'NumpadAdd') {
+          e.preventDefault();
+          const currentZoom = parseFloat(document.documentElement.style.zoom || '1.0');
+          const newZoom = Math.min(Math.round((currentZoom + 0.1) * 10) / 10, 2.0);
+          document.documentElement.style.zoom = `${newZoom}`;
+        } else if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
+          e.preventDefault();
+          const currentZoom = parseFloat(document.documentElement.style.zoom || '1.0');
+          const newZoom = Math.max(Math.round((currentZoom - 0.1) * 10) / 10, 0.6);
+          document.documentElement.style.zoom = `${newZoom}`;
+        } else if (e.key === '0' || e.code === 'Numpad0') {
+          e.preventDefault();
+          document.documentElement.style.zoom = '1.0';
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   const logout = async () => { try { await authApi.logout(); } finally { setIsAuthenticated(false); } };
 
   if (checkingSession) return null;
@@ -81,10 +115,37 @@ export default function App() {
       case 'subjects':
         return <SubjectsScreen />;
       case 'timetables':
+        return (
+          <TimetableDashboardScreen
+            initialDepartmentId={timetableDepartmentId}
+            initialTimetable={selectedSavedTimetable}
+          />
+        );
       case 'generated-timetables':
-        return <TimetableDashboardScreen initialDepartmentId={timetableDepartmentId} />;
+        return (
+          <GeneratedTimetablesScreen
+            onOpen={(savedItem) => {
+              setSelectedSavedTimetable(savedItem);
+              if (savedItem?.department_id) {
+                setTimetableDepartmentId(savedItem.department_id);
+              }
+              setActiveTab('timetables');
+            }}
+            onRegenerate={(savedItem) => {
+              setSelectedSavedTimetable(null);
+              if (savedItem?.department_id) {
+                setTimetableDepartmentId(savedItem.department_id);
+              }
+              setActiveTab('timetables');
+            }}
+          />
+        );
+      case 'asfa-rules':
+        return <AsfaRulesScreen />;
       case 'reports':
         return <ReportsScreen />;
+      case 'training-modules':
+        return <TrainingModulesScreen />;
       case 'ai-chatbot':
         return <AiChatbotWidget isFullPage={true} />;
       case 'notifications':
@@ -139,6 +200,9 @@ export default function App() {
           setIsUploadSchemeOpen(false);
         }}
       />
+
+      {/* Global AI Assistant Floating Button & Drawer (Hidden when already on dedicated AI Chatbot screen) */}
+      <GlobalAiChatbotButton hide={activeTab === 'ai-chatbot'} />
     </div>
   );
 }

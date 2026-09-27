@@ -67,8 +67,10 @@ def departments():
             COALESCE(
                 MAX(
                     CASE
-                        WHEN f.designation LIKE '%Head%'
-                          OR f.designation LIKE '%HOD%'
+                        WHEN f.designation LIKE '%Head of the Department%'
+                          OR f.designation LIKE '%Head of Department%'
+                          OR f.designation LIKE '%Professor & Head%'
+                          OR (f.designation LIKE '%HOD%' AND f.designation NOT LIKE '%Head R & D%' AND f.designation NOT LIKE '%IQAC Head%')
                         THEN f.faculty_name
                     END
                 ),
@@ -349,25 +351,52 @@ def faculty():
             f.status,
 
             COALESCE(
-                SUM(
-                    COALESCE(s.lecture_hours, 0)
-                    + COALESCE(s.tutorial_hours, 0)
-                    + COALESCE(s.practical_hours, 0)
+                NULLIF(
+                    (
+                        SELECT SUM(
+                            CASE
+                                WHEN s_d.course_category = 'PROJ'
+                                  OR d_assign.assignment_role = 'Coordinator'
+                                  OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PROJECT%'
+                                  OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PROJ%'
+                                  OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PLACEMENT%'
+                                  OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PLACEMENT%'
+                                THEN 0
+                                WHEN d_assign.component = 'Lab' THEN COALESCE(s_d.practical_hours, 0)
+                                ELSE COALESCE(s_d.lecture_hours, 0) + COALESCE(s_d.tutorial_hours, 0)
+                            END
+                        )
+                        FROM faculty_subject_assignment_detail d_assign
+                        INNER JOIN subject s_d ON s_d.subject_id = d_assign.subject_id
+                        WHERE d_assign.faculty_id = f.faculty_id
+                          AND d_assign.status = 'Active'
+                    ),
+                    0
+                ),
+                (
+                    SELECT SUM(
+                        COALESCE(s_leg.lecture_hours, 0)
+                        + COALESCE(s_leg.tutorial_hours, 0)
+                        + COALESCE(s_leg.practical_hours, 0)
+                    )
+                    FROM faculty_subject_assignment a_leg
+                    INNER JOIN subject s_leg ON s_leg.subject_id = a_leg.subject_id
+                    WHERE a_leg.faculty_id = f.faculty_id
+                      AND a_leg.status = 'Active'
                 ),
                 0
-            ) AS workload
+            ) AS workload,
+
+            COALESCE(fp.preferred_time, 'No_Preference') AS preferred_time,
+            COALESCE(fp.priority_percentage, 75) AS priority_percentage
 
         FROM faculty f
 
         INNER JOIN department d
             ON d.department_id = f.department_id
 
-        LEFT JOIN faculty_subject_assignment a
-            ON a.faculty_id = f.faculty_id
-            AND a.status = 'Active'
-
-        LEFT JOIN subject s
-            ON s.subject_id = a.subject_id
+        LEFT JOIN faculty_preference fp
+            ON fp.faculty_id = f.faculty_id
 
         WHERE
             (
@@ -389,15 +418,6 @@ def faculty():
         params.append(department_id)
 
     sql += """
-        GROUP BY
-            f.faculty_id,
-            f.faculty_name,
-            f.department_id,
-            d.department_name,
-            f.designation,
-            f.max_workload,
-            f.status
-
         ORDER BY
             f.faculty_name
     """
@@ -430,25 +450,52 @@ def faculty_detail(faculty_id):
             f.status,
 
             COALESCE(
+                NULLIF(
+                    (
+                        SELECT SUM(
+                            CASE
+                                WHEN s_d.course_category = 'PROJ'
+                                  OR d_assign.assignment_role = 'Coordinator'
+                                  OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PROJECT%'
+                                  OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PROJ%'
+                                  OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PLACEMENT%'
+                                  OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PLACEMENT%'
+                                THEN 0
+                                WHEN d_assign.component = 'Lab' THEN COALESCE(s_d.practical_hours, 0)
+                                ELSE COALESCE(s_d.lecture_hours, 0) + COALESCE(s_d.tutorial_hours, 0)
+                            END
+                        )
+                        FROM faculty_subject_assignment_detail d_assign
+                        INNER JOIN subject s_d ON s_d.subject_id = d_assign.subject_id
+                        WHERE d_assign.faculty_id = f.faculty_id
+                          AND d_assign.status = 'Active'
+                    ),
+                    0
+                ),
                 (
                     SELECT SUM(
-                        COALESCE(s2.lecture_hours, 0)
-                        + COALESCE(s2.tutorial_hours, 0)
-                        + COALESCE(s2.practical_hours, 0)
+                        COALESCE(s_leg.lecture_hours, 0)
+                        + COALESCE(s_leg.tutorial_hours, 0)
+                        + COALESCE(s_leg.practical_hours, 0)
                     )
-                    FROM faculty_subject_assignment a2
-                    INNER JOIN subject s2
-                        ON s2.subject_id = a2.subject_id
-                    WHERE a2.faculty_id = f.faculty_id
-                      AND a2.status = 'Active'
+                    FROM faculty_subject_assignment a_leg
+                    INNER JOIN subject s_leg ON s_leg.subject_id = a_leg.subject_id
+                    WHERE a_leg.faculty_id = f.faculty_id
+                      AND a_leg.status = 'Active'
                 ),
                 0
-            ) AS workload
+            ) AS workload,
+
+            COALESCE(fp.preferred_time, 'No_Preference') AS preferred_time,
+            COALESCE(fp.priority_percentage, 75) AS priority_percentage
 
         FROM faculty f
 
         INNER JOIN department d
             ON d.department_id = f.department_id
+
+        LEFT JOIN faculty_preference fp
+            ON fp.faculty_id = f.faculty_id
 
         WHERE f.faculty_id = %s
         """,
@@ -462,42 +509,73 @@ def faculty_detail(faculty_id):
         )
 
     # --------------------------------------------------------
-    # Existing subject assignments
+    # Existing subject assignments (prefer component details)
     # --------------------------------------------------------
 
-    item["assignments"] = rows(
+    detail_assignments = rows(
         """
         SELECT
-            a.assignment_id,
-            a.academic_year,
-            a.status,
+            d.detail_id AS assignment_id,
+            d.academic_year,
+            d.status,
+            d.component,
+            d.assignment_role,
 
             s.subject_id,
             s.subject_code,
             s.subject_name,
 
-            COALESCE(s.lecture_hours, 0)
-                AS lecture_hours,
+            CASE WHEN d.component = 'Lab' THEN 0 ELSE COALESCE(s.lecture_hours, 0) END AS lecture_hours,
+            CASE WHEN d.component = 'Lab' THEN 0 ELSE COALESCE(s.tutorial_hours, 0) END AS tutorial_hours,
+            CASE WHEN d.component = 'Lab' THEN COALESCE(s.practical_hours, 0) ELSE 0 END AS practical_hours
 
-            COALESCE(s.tutorial_hours, 0)
-                AS tutorial_hours,
-
-            COALESCE(s.practical_hours, 0)
-                AS practical_hours
-
-        FROM faculty_subject_assignment a
+        FROM faculty_subject_assignment_detail d
 
         INNER JOIN subject s
-            ON s.subject_id = a.subject_id
+            ON s.subject_id = d.subject_id
 
-        WHERE a.faculty_id = %s
+        WHERE d.faculty_id = %s AND d.status = 'Active'
 
         ORDER BY
-            a.academic_year DESC,
+            d.academic_year DESC,
             s.subject_code
         """,
         (faculty_id,),
     )
+
+    if detail_assignments:
+        item["assignments"] = detail_assignments
+    else:
+        item["assignments"] = rows(
+            """
+            SELECT
+                a.assignment_id,
+                a.academic_year,
+                a.status,
+                'Theory' AS component,
+                'Main' AS assignment_role,
+
+                s.subject_id,
+                s.subject_code,
+                s.subject_name,
+
+                COALESCE(s.lecture_hours, 0) AS lecture_hours,
+                COALESCE(s.tutorial_hours, 0) AS tutorial_hours,
+                COALESCE(s.practical_hours, 0) AS practical_hours
+
+            FROM faculty_subject_assignment a
+
+            INNER JOIN subject s
+                ON s.subject_id = a.subject_id
+
+            WHERE a.faculty_id = %s
+
+            ORDER BY
+                a.academic_year DESC,
+                s.subject_code
+            """,
+            (faculty_id,),
+        )
 
     # --------------------------------------------------------
     # Keep eligibility information for existing frontend

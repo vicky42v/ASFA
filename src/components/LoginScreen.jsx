@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { User, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { authApi } from '../services/api';
+import collegeBg from '../assets/skit-college-campus.jpg';
+import skitEmblem from '../assets/skit-emblem.png';
 
 export default function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('admin');
@@ -28,7 +30,10 @@ export default function LoginScreen({ onLogin }) {
       style={{
         width: '100vw',
         height: '100vh',
-        background: 'linear-gradient(135deg, #0F172A 0%, #003822 50%, #005E38 100%)',
+        backgroundImage: `linear-gradient(135deg, rgba(15, 23, 42, 0.76) 0%, rgba(2, 44, 34, 0.80) 50%, rgba(6, 78, 59, 0.84) 100%), url(${collegeBg})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center center',
+        backgroundRepeat: 'no-repeat',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -40,22 +45,22 @@ export default function LoginScreen({ onLogin }) {
       {/* Decorative Background Graphics */}
       {/* Top Left Swooshes */}
       <svg 
-        style={{ position: 'absolute', top: -50, left: -50, width: '320px', height: '320px', pointerEvents: 'none', opacity: 0.8 }} 
+        style={{ position: 'absolute', top: -50, left: -50, width: '320px', height: '320px', pointerEvents: 'none', opacity: 0.6 }} 
         viewBox="0 0 200 200"
       >
-        <circle cx="50" cy="50" r="120" fill="#005E38" opacity="0.4" />
-        <circle cx="50" cy="50" r="90" fill="none" stroke="#DC2626" strokeWidth="2.5" opacity="0.6" />
-        <circle cx="50" cy="50" r="140" fill="none" stroke="#005E38" strokeWidth="3" opacity="0.8" />
+        <circle cx="50" cy="50" r="120" fill="#005E38" opacity="0.35" />
+        <circle cx="50" cy="50" r="90" fill="none" stroke="#DC2626" strokeWidth="2.5" opacity="0.5" />
+        <circle cx="50" cy="50" r="140" fill="none" stroke="#005E38" strokeWidth="3" opacity="0.7" />
       </svg>
 
       {/* Bottom Right Swooshes */}
       <svg 
-        style={{ position: 'absolute', bottom: -80, right: -80, width: '420px', height: '420px', pointerEvents: 'none', opacity: 0.85 }} 
+        style={{ position: 'absolute', bottom: -80, right: -80, width: '420px', height: '420px', pointerEvents: 'none', opacity: 0.7 }} 
         viewBox="0 0 200 200"
       >
-        <circle cx="150" cy="150" r="130" fill="#005E38" opacity="0.5" />
-        <circle cx="150" cy="150" r="100" fill="none" stroke="#DC2626" strokeWidth="2.5" opacity="0.7" />
-        <circle cx="150" cy="150" r="150" fill="none" stroke="#10B981" strokeWidth="3" opacity="0.8" />
+        <circle cx="150" cy="150" r="130" fill="#005E38" opacity="0.4" />
+        <circle cx="150" cy="150" r="100" fill="none" stroke="#DC2626" strokeWidth="2.5" opacity="0.6" />
+        <circle cx="150" cy="150" r="150" fill="none" stroke="#10B981" strokeWidth="3" opacity="0.7" />
       </svg>
 
       {/* Top Right Dot Grid */}
@@ -67,7 +72,7 @@ export default function LoginScreen({ onLogin }) {
           display: 'grid',
           gridTemplateColumns: 'repeat(6, 8px)',
           gap: '12px',
-          opacity: 0.6
+          opacity: 0.5
         }}
       >
         {Array.from({ length: 30 }).map((_, i) => (
@@ -84,7 +89,7 @@ export default function LoginScreen({ onLogin }) {
           display: 'grid',
           gridTemplateColumns: 'repeat(6, 8px)',
           gap: '12px',
-          opacity: 0.6
+          opacity: 0.5
         }}
       >
         {Array.from({ length: 30 }).map((_, i) => (
@@ -97,13 +102,13 @@ export default function LoginScreen({ onLogin }) {
         style={{
           width: '100%',
           maxWidth: '430px',
-          background: 'rgba(255, 255, 255, 0.92)',
-          backdropFilter: 'blur(24px)',
-          WebkitBackdropFilter: 'blur(24px)',
+          background: 'rgba(255, 255, 255, 0.94)',
+          backdropFilter: 'blur(28px)',
+          WebkitBackdropFilter: 'blur(28px)',
           borderRadius: '28px',
-          border: '1.5px solid rgba(255, 255, 255, 0.95)',
-          boxShadow: '0 30px 70px rgba(0, 0, 0, 0.35), 0 10px 20px rgba(0, 0, 0, 0.2)',
-          padding: '38px 36px 30px 36px',
+          border: '1.5px solid rgba(255, 255, 255, 0.98)',
+          boxShadow: '0 30px 70px rgba(0, 0, 0, 0.4), 0 10px 20px rgba(0, 0, 0, 0.25)',
+          padding: '36px 36px 28px 36px',
           textAlign: 'center',
           zIndex: 10,
           margin: '20px',
@@ -111,38 +116,33 @@ export default function LoginScreen({ onLogin }) {
         }}
       >
         {/* SKIT Circular Emblem Logo */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
-          <div 
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}>
+          <img 
+            src={skitEmblem} 
+            alt="Sri Krishna Institute of Technology Emblem"
             style={{
-              width: '76px',
-              height: '76px',
+              width: '82px',
+              height: '82px',
               borderRadius: '50%',
+              objectFit: 'contain',
+              boxShadow: '0 8px 24px rgba(0, 94, 56, 0.3)',
+              border: '3px solid #FFFFFF',
               background: '#FFFFFF',
-              border: '2.5px solid #005E38',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 6px 16px rgba(0, 94, 56, 0.2)',
-              padding: '6px'
+              padding: '2px'
             }}
-          >
-            <svg viewBox="0 0 100 100" style={{ width: '100%', height: '100%' }}>
-              <circle cx="50" cy="50" r="46" fill="none" stroke="#005E38" strokeWidth="3" />
-              <path d="M50 12 L78 28 L78 68 L50 86 L22 68 L22 28 Z" fill="#005E38" opacity="0.1" />
-              <text x="50" y="32" textAnchor="middle" fill="#005E38" fontSize="11" fontWeight="800" letterSpacing="0.5">SKIT</text>
-              <circle cx="50" cy="52" r="14" fill="#005E38" />
-              <path d="M43 52 L57 52 M50 45 L50 59" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" />
-              <text x="50" y="78" textAnchor="middle" fill="#005E38" fontSize="6.5" fontWeight="700">BENGALURU</text>
-            </svg>
-          </div>
+          />
         </div>
 
         {/* Institution Brand Header */}
         <div style={{ fontSize: '1.05rem', fontWeight: '900', color: '#005E38', letterSpacing: '0.04em' }}>
           SKIT
         </div>
-        <div style={{ fontSize: '0.68rem', fontWeight: '800', color: '#1E293B', letterSpacing: '0.06em', marginBottom: '16px' }}>
+        <div style={{ fontSize: '0.68rem', fontWeight: '800', color: '#1E293B', letterSpacing: '0.06em', marginBottom: '10px' }}>
           SRI KRISHNA INSTITUTE OF TECHNOLOGY
+        </div>
+
+        <div style={{ display: 'inline-block', padding: '3px 12px', background: '#E8F5E9', border: '1px solid #A7F3D0', borderRadius: '12px', fontSize: '0.72rem', fontWeight: '800', color: '#005E38', marginBottom: '14px', letterSpacing: '0.05em' }}>
+          AI-ASFA
         </div>
 
         {/* System Title & Motto */}

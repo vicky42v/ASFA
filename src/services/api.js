@@ -77,6 +77,12 @@ async function request(path, options = {}) {
     : body;
 }
 
+// ============================================================
+// NATIVE ASFA BACKEND API
+// ============================================================
+// BASIC API OBJECT
+// ============================================================
+
 export const api = {
   get: (path) =>
     request(path),
@@ -202,7 +208,11 @@ export const facultyAssignmentApi = {
 
     Object.entries(extra || {}).forEach(
       ([key, value]) => {
-        if (value !== undefined && value !== null && value !== '') {
+        if (
+          value !== undefined &&
+          value !== null &&
+          value !== ''
+        ) {
           params.set(key, value);
         }
       }
@@ -230,20 +240,45 @@ export const facultyAssignmentApi = {
     ),
 };
 
-// Component-aware assignments are the source of truth for timetable
-// generation.  The legacy API above remains available for older callers.
+// ============================================================
+// COMPONENT-LEVEL FACULTY ASSIGNMENTS
+// ============================================================
+//
+// The Flask/MySQL database remains the source of truth.
+//
+// The frontend saves the real assignment rows through Flask.
+// After the complete assignment set has been verified, the
+// frontend calls notifySaveAssignments() ONCE so n8n receives
+// the complete real assignment payload.
+// ============================================================
+
 export const facultyAssignmentDetailApi = {
   list: (data = {}) =>
     api.get(
       `/faculty-assignment-details?${new URLSearchParams(data)}`
     ),
 
+  // Save one real assignment to Flask/MySQL.
   save: (data) =>
-    api.post('/faculty-assignment-details', data),
+    api.post(
+      '/faculty-assignment-details',
+      data
+    ),
 
-  clear: (subjectId, component, academicYear) =>
+  notifySaveAssignments: async () => ({ success: true }),
+
+  clear: (
+    subjectId,
+    component,
+    academicYear,
+    assignmentRole = 'Main'
+  ) =>
     api.delete(
-      `/faculty-assignment-details/${subjectId}/${component}?academic_year=${encodeURIComponent(academicYear)}`
+      `/faculty-assignment-details/${subjectId}/${component}?academic_year=${encodeURIComponent(
+        academicYear
+      )}&assignment_role=${encodeURIComponent(
+        assignmentRole
+      )}`
     ),
 };
 
@@ -309,23 +344,59 @@ export const timetableApi = {
       `/timetable?${new URLSearchParams(data)}`
     ),
 
-  generate: (data) =>
-    api.post(
-      '/timetable/generate',
-      data
-    ),
+  // ==========================================================
+  // GENERATE TIMETABLE THROUGH N8N
+  // ==========================================================
+  //
+  // Frontend
+  //    ↓
+  // n8n
+  //    ↓
+  // MySQL assignments
+  //    ↓
+  // AI model
+  //    ↓
+  // validation
+  //    ↓
+  // n8n response
+  //    ↓
+  // Frontend
+  //
+  // No PowerShell is required.
+  // ==========================================================
 
+  generate: async (data) => {
+    return await api.post('/timetable/generate', data);
+  },
+
+  // Keep the normal Flask validation endpoint.
   validate: (data) =>
     api.post(
       '/timetable/validate',
       data
     ),
 
+  // Keep the normal Flask save endpoint.
   save: (data) =>
     api.post(
       '/timetable/save',
       data
     ),
+};
+
+// ============================================================
+// AI TIMETABLE CONFLICT RESOLUTION (NATIVE ASFA MODEL 3)
+// ============================================================
+
+export const timetableAiApi = {
+  resolve: (data) =>
+    api.post('/timetable/generate', {
+      ...data,
+      number_of_outputs: 1,
+    }),
+
+  status: () =>
+    api.get('/timetable/ai-status'),
 };
 
 // ============================================================
@@ -420,4 +491,37 @@ export const settingsApi = {
       '/settings',
       values
     ),
+};
+
+// ============================================================
+// ASFA ENGINE & RULES API
+// ============================================================
+
+export const asfaApi = {
+  getRules: (params = '') =>
+    api.get(`/rules${params ? (params.startsWith('?') ? params : `?${params}`) : ''}`),
+
+  createRule: (data) =>
+    api.post('/rules', data),
+
+  updateRule: (id, data) =>
+    api.put(`/rules/${id}`, data),
+
+  deleteRule: (id) =>
+    api.delete(`/rules/${id}`),
+
+  getFacultyPreference: (facultyId, academicYear = '2026-27') =>
+    api.get(`/faculty/${facultyId}/preference?academic_year=${academicYear}`),
+
+  saveFacultyPreference: (facultyId, data) =>
+    api.post(`/faculty/${facultyId}/preference`, data),
+
+  getMetrics: () =>
+    api.get('/asfa/metrics'),
+
+  getHistory: () =>
+    api.get('/asfa/history'),
+
+  trainModel: () =>
+    api.post('/asfa/train'),
 };

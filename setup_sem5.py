@@ -24,6 +24,7 @@ with app.app_context():
     valid_assignments = [
         (103, 1, 'Theory', 'Main'),
         (104, 2, 'Theory', 'Main'),
+        (104, 2, 'Lab', 'Main'),
         (105, 3, 'Theory', 'Main'),
         (106, 4, 'Lab', 'Main'),
         (107, 5, 'Lab', 'Main'),

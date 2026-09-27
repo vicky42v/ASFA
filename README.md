@@ -1,92 +1,102 @@
-# SKIT AI Academic Scheduling System
+# AI-ASFA (SKIT) - Academic Scheduling & Faculty Allocation
 
-A state-of-the-art, high-performance Admin Dashboard UI/UX for the **Sri Krishna Institute of Technology (SKIT)** AI Academic Scheduling System built with React, Vite, Lucide Icons, Chart.js, and CSS design system.
+AI Based Academic Scheduling and Faculty Allocation System for **Sri Krishna Institute of Technology (SKIT)**.
+Built with React 19, Vite, Electron, Python Flask, OR-Tools CP-SAT, and MySQL.
 
-## 🚀 Key Features & Modules
+---
 
-- **Dashboard**: High-level metrics, quick action triggers, recent published timetables, and embedded AI Assistant.
-- **Department Management**: Complete department directory, HOD assignments, and faculty allocations modal.
-- **AI-Powered Faculty Management**: Resume upload drag-and-drop zone with automated confidence scoring, faculty workload gauges, and complete profile preview.
-- **AI Scheme PDF Upload**: Automated syllabus extractor table parsing department, semester, subject codes, credits, theory/lab hours, and elective statuses.
-- **Timetable Generator**: Full interactive weekly grid matrix (Mon–Sat, Periods I–VII) with AI Assistant side-drawer for faculty slot recommendations and conflict resolution.
-- **Reports & Analytics**: Interactive Chart.js graphs for subject type distribution, faculty workload, room utilization gauges, and department health indicators.
-- **Role Management**: User directory with permission roles (Super Admin, HOD, Timetable Coordinator, Faculty) and role distribution analytics.
-- **System Services**: Academic Sessions, Notifications Broadcast, Audit Trail Logs, Database Backup & Recovery, System Settings, and Glassmorphic Login.
+## ⚡ Instant 1-Click Launch (Recommended)
 
-## 🛠️ Technology Stack
+When you clone or download this repository, you do **not** need to manually install dependencies. Simply run:
 
-- **Framework**: React 19 + Vite 6
-- **Icons**: Lucide React
-- **Charts**: Chart.js 4 + React-ChartJS-2
-- **Styling**: Custom CSS Design System with CSS Variables & Tokens
-
-## 💻 Getting Started
-
-### Prerequisites
-
-- Node.js v18+ and npm
-- Python 3.10+ and MySQL 8+
-
-### Installation & Development
-
-```bash
-# Install dependencies
-npm install
-
-# Start local dev server
-npm run dev
+```cmd
+Launch-AI-ASFA.bat
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser to view the application.
+### What `Launch-AI-ASFA.bat` automatically does:
+1. Verifies **Node.js** and **Python** are installed.
+2. Creates `.env` configuration file from `.env.example` if not present.
+3. Automatically creates Python virtual environment (`.venv`) and installs all Python packages (`requirements.txt`).
+4. Automatically runs `npm install` if `node_modules` is not yet installed.
+5. Launches the AI-ASFA Desktop application window!
 
-### Backend and database
+---
 
-1. Create `timetable_db` using the provided `timetable_db.sql` only when setting up a new local database. Do not import it into a database that already holds project data.
-2. Copy `.env.example` to `.env` and enter local MySQL credentials.
-   If the MySQL client is not on `PATH`, set `MYSQL_CLIENT_PATH` to its local executable.
-3. Run the additive migrations once. They only add support tables/columns; they do not delete academic data.
+## 🗄️ Database Setup (Complete Data Included)
 
-```powershell
-mysql -u root -p timetable_db < backend/migrations/001_admin_support.sql
-mysql -u root -p timetable_db < backend/migrations/002_component_assignments_and_timetable_context.sql
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -r backend/requirements.txt
-.\.venv\Scripts\python -m backend.app
+This repository includes the complete, up-to-date database dump in `timetable_db.sql` (~21MB), including all departments, faculties, schemes, syllabus rules, and generated timetables.
+
+### To import the database:
+Double-click:
+```cmd
+setup_database.bat
 ```
+*(Enter your MySQL root password when prompted, or default `root12345678`)*
 
-The API listens on `http://127.0.0.1:5000`. The browser communicates only with this API; MySQL credentials remain server-side. Create the first `Admin` account with the commented, password-hash-only example in the migration.
-
-### Scheduling, backup, and chat
-
-- `POST /api/timetable/generate` uses OR-Tools CP-SAT with actual subject hours, active assignments, timetable constraints, and existing faculty occupancy. A proposal is not saved until `POST /api/timetable/save` succeeds validation.
-- The backup endpoint uses local `mysqldump`; restore requires an Admin role, a checksum-valid recorded backup, and the exact `RESTORE <filename>` confirmation. Restore is never automatic.
-- `POST /api/chat` permits only controlled read-only database retrieval. Set `OLLAMA_MODEL` to use local Ollama; without it or when unavailable, the API returns a factual structured-data fallback.
-
-### Building for Production
-
-```bash
-# Build production bundle
-npm run build
-
-# Preview production build
-npm run preview
-```
-
-## 📁 Project Structure
-
-```
-admin/
-├── public/
-├── src/
-│   ├── components/       # UI Components & Admin Screens
-│   ├── data/             # Academic Mock Datasets
-│   ├── App.jsx           # Main Shell & Route Handler
-│   ├── index.css         # Custom Design System Tokens
-│   └── main.jsx          # Entry point
-├── index.html
-├── package.json
-└── vite.config.js
+Or run manually via command prompt / MySQL CLI:
+```cmd
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS timetable_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -u root -p timetable_db < timetable_db.sql
 ```
 
 ---
-Developed for SKIT AI Academic Scheduling System.
+
+## 📦 Manual Setup & Installation (Optional)
+
+If you prefer installing dependencies manually step-by-step:
+
+### 1. Python Backend
+```cmd
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python -m backend.app
+```
+Backend runs at `http://127.0.0.1:5000`.
+
+### 2. Frontend / Desktop
+```cmd
+npm install
+npm run desktop    # For Electron desktop app
+# OR
+npm run dev        # For Web browser mode at http://localhost:5173
+```
+
+---
+
+## 🚀 Key Features & Modules
+
+- **AI-Driven Timetable Engine**: Constraint programming using Google OR-Tools CP-SAT with multi-shift, lab batching, cross-department sharing, and conflict resolution.
+- **ASFA Custom Rule Engine**: Configurable strict/soft rules, consecutive period bounds, lunch locks, and gap minimization.
+- **Faculty Management & Workload**: Automatic workload tracking, slot recommendations, and profile management.
+- **Scheme Syllabus Extractor**: Parsing schemes, subject codes, credits, lecture/tutorial/practical distributions.
+- **Export & Sync**: High-resolution print/PDF timetable exports, Excel exports, and local database backup/restore.
+- **AI Chatbot & Assistant**: Embedded LLM assistant with local Ollama fallback for timetable queries.
+
+---
+
+## 📁 Repository Structure
+
+```
+AI-ASFA/
+├── Launch-AI-ASFA.bat         # Automated launcher (installs dependencies & launches)
+├── install_dependencies.bat   # Standalone package installer
+├── setup_database.bat         # 1-click MySQL database importer
+├── timetable_db.sql           # Complete project database dump with all records
+├── requirements.txt           # Python backend dependencies
+├── package.json               # Node.js & Electron dependencies
+├── electron-main.cjs          # Electron desktop wrapper
+├── backend/                   # Flask backend & OR-Tools CP-SAT scheduler
+│   ├── app.py
+│   ├── db.py
+│   ├── routes/                # REST endpoints
+│   ├── services/              # CP-SAT scheduler, ASFA rule engine, chat
+│   └── migrations/            # SQL migration scripts
+└── src/                       # React frontend
+    ├── components/            # Dashboard screens, timetable matrix, rules
+    ├── services/              # API services and export utilities
+    └── assets/                # Logos, emblems, styling assets
+```
+
+---
+Sri Krishna Institute of Technology (SKIT) — AI-ASFA Timetable System

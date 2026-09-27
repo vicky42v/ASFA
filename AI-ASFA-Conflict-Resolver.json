@@ -1,0 +1,71 @@
+{
+  "name": "AI-ASFA Conflict Resolver",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-asfa-conflict",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "ai-asfa-webhook",
+      "name": "AI-ASFA Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "ai-asfa-conflict"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst compact = JSON.stringify(input);\nconst prompt = `You are the local scheduling planner for AI-ASFA. Return ONLY JSON.\n\nRequired output shape:\n{\"status\":\"resolved|alternative|failed\",\"explanation\":\"short explanation\",\"timetable\":[...]}\n\nRules:\n- Never invent subject IDs or faculty IDs.\n- Keep subject_id, faculty_id, co_faculty_id and component from the supplied database context.\n- Theory has Main faculty only. Co faculty is only valid for Lab.\n- Main and Co faculty cannot be the same.\n- A faculty member cannot teach two sessions at the same time.\n- Normal theory classes cannot overlap in the same semester slot.\n- Labs may overlap only when their faculty sets do not overlap.\n- Keep lab blocks contiguous and respect lab duration, breaks and lunch.\n- Respect working days and periods per day.\n- Respect cycle P/C when supplied.\n- Do not change faculty assignments to solve a conflict; move timetable sessions instead.\n- If conflicts are present, fix them. If there are no conflicts, generate ONE different valid alternative.\n- Return every timetable row needed, not only changed rows.\n\nInput:\n${compact}`;\nreturn [{ json: { model: input.model || 'qwen3:4b', prompt, stream: false } }];"
+      },
+      "id": "ai-asfa-build-prompt",
+      "name": "Build Qwen Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/generate",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ model: $json.model, prompt: $json.prompt, stream: false }) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "ai-asfa-ollama",
+      "name": "Ollama Qwen3 4B",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json;\nlet text = raw.response ?? raw.body?.response ?? raw.body ?? raw.text ?? '';\nif (typeof text !== 'string') text = JSON.stringify(text);\ntext = text.trim().replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/\\s*```$/i, '');\nlet parsed = {};\ntry { parsed = JSON.parse(text); } catch (error) {\n  const start = text.indexOf('{');\n  const end = text.lastIndexOf('}');\n  if (start >= 0 && end > start) parsed = JSON.parse(text.slice(start, end + 1));\n}\nreturn [{ json: parsed }];"
+      },
+      "id": "ai-asfa-parse",
+      "name": "Parse Qwen JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 300]
+    }
+  ],
+  "connections": {
+    "AI-ASFA Webhook": {
+      "main": [[{"node": "Build Qwen Prompt", "type": "main", "index": 0}]]
+    },
+    "Build Qwen Prompt": {
+      "main": [[{"node": "Ollama Qwen3 4B", "type": "main", "index": 0}]]
+    },
+    "Ollama Qwen3 4B": {
+      "main": [[{"node": "Parse Qwen JSON", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "ai-asfa-local-v1"
+}

@@ -1,15 +1,36 @@
 """Small MySQL data-access helpers. All values are parameterized."""
 from contextlib import contextmanager
 import mysql.connector
-from mysql.connector import Error
+from mysql.connector import Error, pooling
 from flask import current_app
+
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        cfg = dict(current_app.config["DB_CONFIG"])
+        if cfg.get("host") == "localhost":
+            cfg["host"] = "127.0.0.1"
+        cfg["pool_name"] = "asfa_pool"
+        cfg["pool_size"] = 15
+        cfg["pool_reset_session"] = True
+        _pool = pooling.MySQLConnectionPool(**cfg)
+    return _pool
 
 
 @contextmanager
 def connection():
     conn = None
     try:
-        conn = mysql.connector.connect(**current_app.config["DB_CONFIG"])
+        try:
+            conn = _get_pool().get_connection()
+        except Exception:
+            cfg = dict(current_app.config["DB_CONFIG"])
+            if cfg.get("host") == "localhost":
+                cfg["host"] = "127.0.0.1"
+            conn = mysql.connector.connect(**cfg)
         yield conn
         conn.commit()
     except Error:

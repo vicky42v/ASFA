@@ -42,7 +42,55 @@ def dashboard():
 def report_summary():
     data = {
         "subject_types": rows("SELECT CASE WHEN practical_hours>0 THEN 'Lab' ELSE 'Theory' END AS type,COUNT(*) AS count FROM subject GROUP BY type"),
-        "faculty_workload": rows("""SELECT f.faculty_id,f.faculty_name,COALESCE(SUM(s.lecture_hours+s.tutorial_hours+s.practical_hours),0) AS hours FROM faculty f LEFT JOIN faculty_subject_assignment a ON a.faculty_id=f.faculty_id AND a.status='Active' LEFT JOIN subject s ON s.subject_id=a.subject_id GROUP BY f.faculty_id,f.faculty_name ORDER BY hours DESC LIMIT 10"""),
+        "faculty_workload": rows("""
+            SELECT 
+                f.faculty_id,
+                f.faculty_name,
+                COALESCE(
+                    NULLIF(
+                        (
+                            SELECT SUM(
+                                CASE
+                                    WHEN s_d.course_category = 'PROJ'
+                                      OR d_assign.assignment_role = 'Coordinator'
+                                      OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PROJECT%'
+                                      OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PROJ%'
+                                      OR UPPER(COALESCE(s_d.subject_name, '')) LIKE '%PLACEMENT%'
+                                      OR UPPER(COALESCE(s_d.subject_code, '')) LIKE '%PLACEMENT%'
+                                    THEN 0
+                                    WHEN d_assign.component = 'Lab' THEN COALESCE(s_d.practical_hours, 0)
+                                    ELSE COALESCE(s_d.lecture_hours, 0) + COALESCE(s_d.tutorial_hours, 0)
+                                END
+                            )
+                            FROM faculty_subject_assignment_detail d_assign
+                            JOIN subject s_d ON s_d.subject_id = d_assign.subject_id
+                            WHERE d_assign.faculty_id = f.faculty_id
+                              AND d_assign.status = 'Active'
+                        ),
+                        0
+                    ),
+                    (
+                        SELECT SUM(
+                            CASE
+                                WHEN s_leg.course_category = 'PROJ'
+                                  OR UPPER(COALESCE(s_leg.subject_name, '')) LIKE '%PROJECT%'
+                                  OR UPPER(COALESCE(s_leg.subject_code, '')) LIKE '%PROJ%'
+                                THEN 0
+                                ELSE COALESCE(s_leg.lecture_hours, 0) + COALESCE(s_leg.tutorial_hours, 0) + COALESCE(s_leg.practical_hours, 0)
+                            END
+                        )
+                        FROM faculty_subject_assignment a_leg
+                        JOIN subject s_leg ON s_leg.subject_id = a_leg.subject_id
+                        WHERE a_leg.faculty_id = f.faculty_id
+                          AND a_leg.status = 'Active'
+                    ),
+                    0
+                ) AS hours
+            FROM faculty f
+            WHERE f.status = 'Active'
+            ORDER BY hours DESC, f.faculty_name ASC
+            LIMIT 15
+        """),
         "departments": rows("""SELECT d.department_id,d.department_name,COUNT(DISTINCT f.faculty_id) AS faculty,COUNT(DISTINCT s.subject_id) AS subjects,COUNT(DISTINCT CONCAT(t.academic_year,'|',t.semester_type,'|',t.semester_id)) AS timetables FROM department d LEFT JOIN faculty f ON f.department_id=d.department_id AND f.status='Active' LEFT JOIN subject s ON s.department_id=d.department_id LEFT JOIN timetable t ON t.department_id=d.department_id GROUP BY d.department_id,d.department_name"""),
         "assignment_status": rows("""SELECT s.subject_id,s.subject_code,s.subject_name,COUNT(a.assignment_id) AS assignments FROM subject s LEFT JOIN faculty_subject_assignment a ON a.subject_id=s.subject_id AND a.status='Active' GROUP BY s.subject_id,s.subject_code,s.subject_name HAVING assignments=0"""),
     }

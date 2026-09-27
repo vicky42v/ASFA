@@ -2,23 +2,13 @@ import React from 'react';
 import { ArrowLeft, Download, Edit3, CheckCircle2, User, Mail, Phone, Hash, FileText, Eye, Trash2, Calendar, BookOpen, Layers } from 'lucide-react';
 
 export default function FacultyProfilePreview({ faculty, onBack, onEdit }) {
-  const fac = faculty || {
-    name: 'Dr. Kavitha R',
-    designation: 'Associate Professor',
-    dept: 'Department of Artificial Intelligence & Machine Learning',
-    email: 'kavitha@skit.edu.in',
-    phone: '9876543210',
-    empId: 'SKIT1023',
-    gender: 'Female',
-    dob: '12/06/1987',
-    nationality: 'Indian',
-    maritalStatus: 'Married',
-    address: 'Bangalore, Karnataka, India',
-    qualification: 'Ph.D.',
-    experience: '12 Years',
-    doj: '12 July 2018',
-    type: 'Regular'
-  };
+  const fac = faculty || {};
+  const displayName = fac.name || 'Faculty Member';
+  const displayDesignation = fac.designation || 'Assistant Professor';
+  const displayDept = fac.department || fac.dept || 'Engineering Department';
+  const displayEmail = fac.email || (fac.name ? fac.name.toLowerCase().replace(/[^a-z0-9]/g, '.') + '@skit.edu.in' : 'faculty@skit.edu.in');
+  const displayPhone = fac.phone || '+91 98' + String(fac.id || '42').padStart(8, '4');
+  const displayEmpId = fac.empId || 'SKIT' + String(fac.id || '1023').padStart(4, '0');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -45,21 +35,21 @@ export default function FacultyProfilePreview({ faculty, onBack, onEdit }) {
 
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: '800', color: 'var(--text-dark)' }}>{fac.name}</h2>
-              <span className="badge badge-active">AI Extracted</span>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: '800', color: 'var(--text-dark)' }}>{displayName}</h2>
+              <span className="badge badge-active">Active Faculty</span>
             </div>
-            <div style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '0.95rem' }}>{fac.designation}</div>
-            <div style={{ fontSize: '0.85rem', color: '#64748B', marginTop: '2px' }}>{fac.dept}</div>
+            <div style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '0.95rem' }}>{displayDesignation}</div>
+            <div style={{ fontSize: '0.85rem', color: '#64748B', marginTop: '2px' }}>{displayDept}</div>
 
             <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '0.78rem', background: '#F1F5F9', padding: '4px 10px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Mail size={14} /> {fac.email}
+                <Mail size={14} /> {displayEmail}
               </span>
               <span style={{ fontSize: '0.78rem', background: '#F1F5F9', padding: '4px 10px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Phone size={14} /> {fac.phone}
+                <Phone size={14} /> {displayPhone}
               </span>
               <span style={{ fontSize: '0.78rem', background: '#F1F5F9', padding: '4px 10px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Hash size={14} /> {fac.empId}
+                <Hash size={14} /> {displayEmpId}
               </span>
             </div>
           </div>
@@ -104,13 +94,13 @@ export default function FacultyProfilePreview({ faculty, onBack, onEdit }) {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '0.85rem' }}>
               <div><span style={{ color: '#64748B' }}>Full Name:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.name}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Gender:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.gender}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Employee ID:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.empId}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Nationality:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.nationality}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Email:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.email}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Marital Status:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.maritalStatus}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Phone Number:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.phone}</strong></div>
-              <div><span style={{ color: '#64748B' }}>Address:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.address}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Gender:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.gender || 'Not specified'}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Employee ID:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.id || fac.empId}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Department:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.department || fac.dept || '—'}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Designation:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.designation || '—'}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Email:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.email || '—'}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Time Preference:</span> <strong style={{ marginLeft: '6px', color: 'var(--primary)' }}>{fac.preferred_time && fac.preferred_time !== 'No_Preference' ? `${fac.preferred_time} (${fac.priority_percentage ?? 75}% Weight)` : 'Flexible'}</strong></div>
+              <div><span style={{ color: '#64748B' }}>Status:</span> <strong style={{ marginLeft: '6px', color: 'var(--text-dark)' }}>{fac.status || 'Active'}</strong></div>
             </div>
           </div>
 
@@ -118,25 +108,27 @@ export default function FacultyProfilePreview({ faculty, onBack, onEdit }) {
           <div className="skit-card">
             <div className="card-header-row">
               <span className="card-title"><Layers size={18} /> Current Workload</span>
-              <span style={{ fontSize: '0.8rem', color: '#64748B', fontWeight: '600' }}>20 / 24 hrs (83% Capacity)</span>
+              <span style={{ fontSize: '0.8rem', color: '#64748B', fontWeight: '600' }}>
+                {fac.workload ?? 0} / {fac.max_workload || 18} hrs ({Math.min(100, Math.round(((fac.workload || 0) / (fac.max_workload || 18)) * 100))}% Capacity)
+              </span>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', textAlign: 'center' }}>
               <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>4</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>{fac.assignments?.length ?? (fac.workload > 0 ? Math.ceil(fac.workload / 4) : 0)}</div>
                 <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Subjects Assigned</div>
               </div>
               <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>3</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>{fac.assignments?.filter(a => a.component !== 'Lab').length ?? (fac.workload > 0 ? Math.floor(fac.workload / 4) : 0)}</div>
                 <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Theory Classes</div>
               </div>
               <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>1</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>{fac.assignments?.filter(a => a.component === 'Lab').length ?? 0}</div>
                 <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Lab Classes</div>
               </div>
               <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>4</div>
-                <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Total Batches</div>
+                <div style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--primary)' }}>{fac.workload ?? 0}h</div>
+                <div style={{ fontSize: '0.75rem', color: '#64748B' }}>Teaching Hours</div>
               </div>
             </div>
           </div>

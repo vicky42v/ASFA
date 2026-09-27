@@ -3,7 +3,10 @@ import {
   ArrowLeft,
   Save,
   UserRound,
+  Clock,
+  Sparkles,
 } from 'lucide-react';
+import { asfaApi } from '../services/api';
 
 export default function EditFacultyScreen({
   faculty,
@@ -18,6 +21,8 @@ export default function EditFacultyScreen({
     designation: '',
     max_workload: '',
     status: 'Active',
+    preferred_time: 'No_Preference',
+    priority_percentage: 75,
   });
 
   const [saving, setSaving] = useState(false);
@@ -38,7 +43,21 @@ export default function EditFacultyScreen({
         faculty.maxWorkload ??
         '',
       status: faculty.status || 'Active',
+      preferred_time: faculty.preferred_time || 'No_Preference',
+      priority_percentage: faculty.priority_percentage ?? 75,
     });
+
+    if (faculty.id) {
+      asfaApi.getFacultyPreference(faculty.id).then((pref) => {
+        if (pref && pref.preferred_time) {
+          setFormData((prev) => ({
+            ...prev,
+            preferred_time: pref.preferred_time,
+            priority_percentage: pref.priority_percentage ?? 75,
+          }));
+        }
+      }).catch(() => {});
+    }
   }, [faculty]);
 
   // ---------------------------------------------------------
@@ -115,6 +134,16 @@ export default function EditFacultyScreen({
       }
 
       await onSave(faculty.id, payload);
+
+      // Save soft preference
+      try {
+        await asfaApi.saveFacultyPreference(faculty.id, {
+          preferred_time: formData.preferred_time,
+          priority_percentage: Number(formData.priority_percentage),
+        });
+      } catch (prefErr) {
+        console.warn('Could not save faculty preference:', prefErr);
+      }
     } catch (error) {
       console.error(
         'Failed to update faculty:',
@@ -504,6 +533,68 @@ export default function EditFacultyScreen({
                   Inactive
                 </label>
               </div>
+            </div>
+
+            {/* SCHEDULE PREFERENCE (ASFA SOFT CONSTRAINT) */}
+            <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #E2E8F0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <Clock size={16} style={{ color: 'var(--primary)' }} />
+                <span style={{ fontSize: '0.88rem', fontWeight: '800', color: 'var(--text-dark)' }}>
+                  Teaching Time Preference
+                </span>
+                <span className="badge badge-active" style={{ fontSize: '0.65rem', padding: '2px 6px' }}>
+                  AI Soft Constraint
+                </span>
+              </div>
+
+              {/* PREFERRED TIME */}
+              <div className="form-group">
+                <label className="form-label">Preferred Time Slot</label>
+                <select
+                  name="preferred_time"
+                  className="form-select"
+                  value={formData.preferred_time}
+                  onChange={handleChange}
+                  disabled={saving}
+                >
+                  <option value="No_Preference">No Preference (Flexible)</option>
+                  <option value="Morning">Morning Preference (Periods 1 - 3)</option>
+                  <option value="Evening">Evening Preference (Periods 4 - 6)</option>
+                </select>
+                <div style={{ marginTop: '4px', fontSize: '0.7rem', color: '#94A3B8' }}>
+                  AI scheduler aims to schedule this faculty during their preferred window.
+                </div>
+              </div>
+
+              {/* PRIORITY SLIDER */}
+              {formData.preferred_time !== 'No_Preference' && (
+                <div className="form-group" style={{ marginTop: '14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label className="form-label" style={{ margin: 0 }}>
+                      Preference Priority Weight
+                    </label>
+                    <span style={{ fontWeight: '800', fontSize: '0.85rem', color: 'var(--primary)' }}>
+                      {formData.priority_percentage}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    name="priority_percentage"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={formData.priority_percentage}
+                    onChange={handleChange}
+                    disabled={saving}
+                    style={{ width: '100%', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#94A3B8', marginTop: '2px' }}>
+                    <span>0% (Lowest)</span>
+                    <span>50% (Standard)</span>
+                    <span>100% (Strict Soft)</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

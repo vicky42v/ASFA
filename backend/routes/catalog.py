@@ -295,6 +295,101 @@ def status(entity, entity_id, active):
     )
 
 
+
+# ============================================================
+# DELETE DEPARTMENT
+# ============================================================
+#
+# Used by the Departments screen's Edit/Delete mode.
+#
+# This is a REAL database delete, not a soft delete:
+#   DELETE FROM department WHERE department_id = %s
+#
+# We intentionally do not silently delete subjects, faculty, timetables,
+# or other dependent records. If MySQL has related rows protected by
+# foreign keys, the API returns a clear conflict instead of partially
+# deleting the department.
+# ============================================================
+
+@bp.delete("/departments/<int:department_id>")
+@require_auth(["Admin"])
+def delete_department(department_id):
+
+    department = row(
+        """
+        SELECT
+            department_id,
+            department_name,
+            department_code
+        FROM department
+        WHERE department_id = %s
+        """,
+        (department_id,),
+    )
+
+    if not department:
+        return fail(
+            "Department not found.",
+            404,
+        )
+
+    try:
+        # Remove any generic status entry first, if one exists.
+        # This does not touch the department's actual data.
+        execute(
+            """
+            DELETE FROM entity_status
+            WHERE entity_type = 'department'
+              AND entity_id = %s
+            """,
+            (department_id,),
+        )
+
+        # Hard delete from the actual department table.
+        execute(
+            """
+            DELETE FROM department
+            WHERE department_id = %s
+            """,
+            (department_id,),
+        )
+
+    except Exception as exc:
+        # Do not hide an FK/data-integrity problem. The department stays
+        # intact and the frontend receives a useful error message.
+        error_text = str(exc)
+
+        if (
+            "foreign key" in error_text.lower()
+            or "1451" in error_text
+        ):
+            return fail(
+                "This department cannot be deleted because it still has "
+                "related records such as subjects, faculty, or timetables. "
+                "Remove those records first.",
+                409,
+            )
+
+        return fail(
+            f"Unable to delete department: {error_text}",
+            500,
+        )
+
+    audit(
+        "Deleted Department",
+        "Departments",
+        str(department_id),
+    )
+
+    return ok(
+        {
+            "id": department_id,
+            "department_name": department["department_name"],
+            "department_code": department.get("department_code"),
+            "deleted": True,
+        }
+    )
+
 # ============================================================
 # SUBJECTS
 # ============================================================
@@ -1532,6 +1627,11 @@ def assignments():
         "",
     )
 
+    scheme_id = request.args.get(
+        "scheme_id",
+        "",
+    )
+
     semester_type = request.args.get(
         "semester_type",
         "",
@@ -1568,6 +1668,16 @@ def assignments():
 
         params.append(
             semester_id
+        )
+
+    if scheme_id:
+
+        filters.append(
+            "s.scheme_id = %s"
+        )
+
+        params.append(
+            scheme_id
         )
 
     if semester_type:
@@ -1875,192 +1985,6 @@ def create_assignment():
     )
 
 
-# ============================================================
-# ============================================================
-# COMPONENT-LEVEL FACULTY ASSIGNMENT DETAILS
-# ============================================================
-#
-# This table is the source of truth for timetable generation:
-#
-#   Theory / Main
-#   Lab    / Main
-#   Lab    / Co
-#
-# IMPORTANT:
-# - The frontend is allowed to change a selection locally.
-# - Clicking "Save Assignments" persists the selection here.
-# - Changing the faculty updates the existing logical row:
-#       subject + academic_year + component + assignment_role
-# - Old active rows for that exact slot are never left behind.
-# - Lab Co is optional and is stored separately from Lab Main.
-# ============================================================
-
-def _faculty_assignment_detail_rows(
-    subject_id="",
-    faculty_id="",
-    academic_year="",
-    component="",
-    assignment_role="",
-    department_id="",
-    semester_id="",
-    semester_type="",
-):
-    filters = []
-    params = []
-
-    if subject_id:
-        filters.append("d.subject_id = %s")
-        params.append(subject_id)
-
-    if faculty_id:
-        filters.append("d.faculty_id = %s")
-        params.append(faculty_id)
-
-    if academic_year:
-        filters.append("d.academic_year = %s")
-        params.append(academic_year)
-
-    if component:
-        filters.append("d.component = %s")
-        params.append(component)
-
-    if assignment_role:
-        filters.append("d.assignment_role = %s")
-        params.append(assignment_role)
-
-    if department_id:
-        filters.append("s.department_id = %s")
-        params.append(department_id)
-
-    if semester_id:
-        filters.append("s.semester_id = %s")
-        params.append(semester_id)
-
-    if semester_type:
-        filters.append("sem.semester_type = %s")
-        params.append(semester_type)
-
-    filters.append("d.status = 'Active'")
-
-    where = "WHERE " + " AND ".join(filters)
-
-    return rows(
-        f"""
-        SELECT
-            d.detail_id,
-            d.subject_id,
-            d.faculty_id,
-            d.academic_year,
-            d.component,
-            d.assignment_role,
-            d.status,
-
-            f.faculty_name,
-            f.designation,
-            f.role,
-            f.min_workload,
-            f.max_workload,
-
-            s.subject_code,
-            s.subject_name,
-            s.department_id,
-            s.semester_id,
-            s.scheme_id,
-            s.lecture_hours,
-            s.tutorial_hours,
-            s.practical_hours,
-
-            sem.semester_no,
-            sem.semester_type
-
-        FROM faculty_subject_assignment_detail d
-
-        INNER JOIN faculty f
-            ON f.faculty_id = d.faculty_id
-
-        INNER JOIN subject s
-            ON s.subject_id = d.subject_id
-
-        INNER JOIN semester sem
-            ON sem.semester_id = s.semester_id
-
-        {where}
-
-        ORDER BY
-            s.subject_code,
-            d.component,
-            d.assignment_role,
-            d.detail_id
-        """,
-        tuple(params),
-    )
-
-
-@bp.get("/faculty-assignment-details")
-@require_auth()
-def assignment_details():
-
-    subject_id = request.args.get(
-        "subject_id",
-        "",
-    )
-
-    faculty_id = request.args.get(
-        "faculty_id",
-        "",
-    )
-
-    academic_year = request.args.get(
-        "academic_year",
-        "",
-    ).strip()
-
-    component = request.args.get(
-        "component",
-        "",
-    ).strip()
-
-    assignment_role = request.args.get(
-        "assignment_role",
-        "",
-    ).strip()
-
-    department_id = request.args.get("department_id", "").strip()
-    semester_id = request.args.get("semester_id", "").strip()
-    semester_type = request.args.get("semester_type", "").strip()
-
-    if component not in (
-        "",
-        "Theory",
-        "Lab",
-    ):
-        return fail(
-            "Component must be Theory or Lab."
-        )
-
-    if assignment_role not in (
-        "",
-        "Main",
-        "Co",
-    ):
-        return fail(
-            "Assignment role must be Main or Co."
-        )
-
-    return ok(
-        _faculty_assignment_detail_rows(
-            subject_id=subject_id,
-            faculty_id=faculty_id,
-            academic_year=academic_year,
-            component=component,
-            assignment_role=assignment_role,
-            department_id=department_id,
-            semester_id=semester_id,
-            semester_type=semester_type,
-        )
-    )
-
-
 @bp.get("/faculty-workload")
 @require_auth()
 def faculty_workload():
@@ -2139,609 +2063,6 @@ def faculty_workload():
             for item in result
             if item is not None
         ]
-    )
-
-
-@bp.post("/faculty-assignment-details")
-@require_auth(EDITORS)
-def save_assignment_detail():
-
-    d = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
-
-    subject_id = d.get("subject_id")
-    faculty_id = d.get("faculty_id")
-    academic_year = str(
-        d.get("academic_year") or ""
-    ).strip()
-
-    component = str(
-        d.get("component") or ""
-    ).strip()
-
-    assignment_role = str(
-        d.get("assignment_role") or "Main"
-    ).strip()
-
-    if not all(
-        [
-            subject_id,
-            faculty_id,
-            academic_year,
-            component,
-        ]
-    ):
-        return fail(
-            "Subject, faculty, academic year, and component are required."
-        )
-
-    if component not in (
-        "Theory",
-        "Lab",
-    ):
-        return fail(
-            "Component must be Theory or Lab."
-        )
-
-    if assignment_role not in (
-        "Main",
-        "Co",
-    ):
-        return fail(
-            "Assignment role must be Main or Co."
-        )
-
-    if (
-        assignment_role == "Co"
-        and component != "Lab"
-    ):
-        return fail(
-            "Co-faculty can only be assigned to Lab.",
-            422,
-        )
-
-    subject = row(
-        """
-        SELECT
-            s.*,
-            sem.semester_no,
-            sem.semester_type,
-            d.department_name,
-            d.department_code,
-            COALESCE(
-                es.is_active,
-                1
-            ) AS is_active
-        FROM subject s
-        INNER JOIN semester sem
-            ON sem.semester_id = s.semester_id
-        INNER JOIN department d
-            ON d.department_id = s.department_id
-        LEFT JOIN entity_status es
-            ON es.entity_type = 'subject'
-           AND es.entity_id = s.subject_id
-        WHERE s.subject_id = %s
-        """,
-        (subject_id,),
-    )
-
-    if not subject:
-        return fail(
-            "Subject not found.",
-            404,
-        )
-
-    if not subject.get("is_active"):
-        return fail(
-            "Subject is inactive.",
-            422,
-        )
-
-    # Do not permit an API caller to attach a subject from another context.
-    for key in ("department_id", "scheme_id", "semester_id"):
-        requested = d.get(key)
-        if requested not in (None, "") and str(requested) != str(subject.get(key)):
-            return fail("The selected subject does not belong to the requested timetable context.", 422)
-
-    requested_type = str(d.get("semester_type") or "").strip()
-    if requested_type and requested_type != str(subject.get("semester_type") or ""):
-        return fail("The selected subject does not belong to the requested semester type.", 422)
-
-    theory_hours = (
-        int(subject.get("lecture_hours") or 0)
-        + int(subject.get("tutorial_hours") or 0)
-    )
-
-    practical_hours = int(
-        subject.get("practical_hours") or 0
-    )
-
-    if (
-        component == "Theory"
-        and theory_hours <= 0
-    ):
-        return fail(
-            "This subject has no Theory/Tutorial hours.",
-            422,
-        )
-
-    if (
-        component == "Lab"
-        and practical_hours <= 0
-    ):
-        return fail(
-            "This subject has no practical/lab hours.",
-            422,
-        )
-
-    faculty = get_faculty_for_workload(
-        int(faculty_id)
-    )
-
-    if not faculty:
-        return fail(
-            "Faculty member not found.",
-            404,
-        )
-
-    if str(
-        faculty.get("status") or ""
-    ).lower() != "active":
-        return fail(
-            "Faculty member is inactive.",
-            422,
-        )
-
-    semester_no = int(subject.get("semester_no") or 0)
-    department_text = " ".join([
-        str(subject.get("department_name") or ""),
-        str(subject.get("department_code") or ""),
-    ]).lower()
-    is_basic_science = (
-        "science and humanities" in department_text
-        or "basic science" in department_text
-        or str(subject.get("department_code") or "").upper() in ("SH", "BSH")
-    )
-    if semester_no in (1, 2):
-        if not is_basic_science or str(faculty.get("department_id")) != str(subject.get("department_id")):
-            return fail("Semester 1 and 2 assignments must use active Basic Science faculty.", 422)
-    elif str(faculty.get("department_id")) != str(subject.get("department_id")):
-        return fail("Faculty must belong to the subject's department.", 422)
-
-    # Make an explicit UI assignment eligible for this subject.
-    if not row(
-        """
-        SELECT 1
-        FROM faculty_subject
-        WHERE
-            faculty_id = %s
-            AND subject_id = %s
-        LIMIT 1
-        """,
-        (
-            faculty_id,
-            subject_id,
-        ),
-    ):
-        execute(
-            """
-            INSERT INTO faculty_subject
-                (
-                    faculty_id,
-                    subject_id
-                )
-            VALUES
-                (
-                    %s,
-                    %s
-                )
-            """,
-            (
-                faculty_id,
-                subject_id,
-            ),
-        )
-
-    # Lab Co cannot be the same faculty as Lab Main.
-    if (
-        assignment_role == "Co"
-    ):
-        main = row(
-            """
-            SELECT
-                faculty_id
-            FROM faculty_subject_assignment_detail
-            WHERE
-                subject_id = %s
-                AND academic_year = %s
-                AND component = 'Lab'
-                AND assignment_role = 'Main'
-                AND status = 'Active'
-            ORDER BY detail_id DESC
-            LIMIT 1
-            """,
-            (
-                subject_id,
-                academic_year,
-            ),
-        )
-
-        if not main:
-            return fail(
-                "Assign the Lab Main faculty before assigning a Co-Faculty.",
-                422,
-            )
-
-        if str(main["faculty_id"]) == str(faculty_id):
-            return fail(
-                "Lab Main and Lab Co-Faculty must be different.",
-                422,
-            )
-
-    # Selecting a subject in a real option group is the elective choice.
-    # Keep other alternatives visible in the catalog, but mark all of their
-    # component/legacy assignment rows inactive so they are never scheduled,
-    # counted toward workload, or reported as pending.
-    if assignment_role == "Main" and subject.get("option_group_id"):
-        sibling_params = (
-            subject["option_group_id"],
-            subject["department_id"],
-            subject["scheme_id"],
-            subject["semester_id"],
-            academic_year,
-            subject_id,
-        )
-        execute(
-            """
-            UPDATE faculty_subject_assignment_detail d
-            INNER JOIN subject s ON s.subject_id = d.subject_id
-            SET d.status = 'Inactive', d.updated_at = NOW()
-            WHERE s.option_group_id = %s
-              AND s.department_id = %s
-              AND s.scheme_id = %s
-              AND s.semester_id = %s
-              AND d.academic_year = %s
-              AND d.status = 'Active'
-              AND s.subject_id <> %s
-            """,
-            sibling_params,
-        )
-        execute(
-            """
-            UPDATE faculty_subject_assignment a
-            INNER JOIN subject s ON s.subject_id = a.subject_id
-            SET a.status = 'Inactive', a.updated_at = NOW()
-            WHERE s.option_group_id = %s
-              AND s.department_id = %s
-              AND s.scheme_id = %s
-              AND s.semester_id = %s
-              AND a.academic_year = %s
-              AND a.status = 'Active'
-              AND s.subject_id <> %s
-            """,
-            sibling_params,
-        )
-
-    # Workload:
-    # replacing an existing row must exclude that old row, otherwise
-    # changing Faculty A -> Faculty B can incorrectly count an unrelated
-    # old row or reject a valid replacement.
-    existing_detail = row(
-        """
-        SELECT
-            detail_id,
-            faculty_id
-        FROM faculty_subject_assignment_detail
-        WHERE
-            subject_id = %s
-            AND academic_year = %s
-            AND component = %s
-            AND assignment_role = %s
-            AND status = 'Active'
-        ORDER BY detail_id DESC
-        LIMIT 1
-        """,
-        (
-            subject_id,
-            academic_year,
-            component,
-            assignment_role,
-        ),
-    )
-
-    old_detail_id = (
-        existing_detail["detail_id"]
-        if existing_detail
-        else None
-    )
-
-    hours = (
-        theory_hours
-        if component == "Theory"
-        else practical_hours
-    )
-
-    workload_check = validate_projected_workload(
-        int(faculty_id),
-        academic_year,
-        hours,
-        exclude_detail_id=old_detail_id,
-    )
-
-    if not workload_check.get("ok"):
-        return fail(
-            workload_check["error"],
-            workload_check.get(
-                "status",
-                422,
-            ),
-        )
-
-    # --------------------------------------------------------
-    # MAIN:
-    # Update the parent assignment first.
-    #
-    # This automatically deactivates the previous parent faculty
-    # and creates the selected faculty as the active parent.
-    #
-    # Then update the exact component row below.
-    # --------------------------------------------------------
-
-    if assignment_role == "Main":
-        parent = create_assignment_internal(
-            faculty_id=int(faculty_id),
-            subject_id=int(subject_id),
-            academic_year=academic_year,
-        )
-
-        if parent.get("error"):
-            return fail(
-                parent["error"],
-                parent.get(
-                    "status",
-                    422,
-                ),
-            )
-
-    # --------------------------------------------------------
-    # EXACT ROW REPLACEMENT
-    #
-    # The key is:
-    # subject + year + component + role
-    #
-    # So changing the faculty updates the SAME logical SQL row.
-    # --------------------------------------------------------
-
-    if existing_detail:
-        execute(
-            """
-            UPDATE faculty_subject_assignment_detail
-            SET
-                faculty_id = %s,
-                status = 'Active',
-                updated_at = NOW()
-            WHERE
-                detail_id = %s
-            """,
-            (
-                faculty_id,
-                existing_detail["detail_id"],
-            ),
-        )
-
-        detail_id = existing_detail[
-            "detail_id"
-        ]
-
-    else:
-        result = execute(
-            """
-            INSERT INTO faculty_subject_assignment_detail
-            (
-                subject_id,
-                faculty_id,
-                academic_year,
-                component,
-                assignment_role,
-                status
-            )
-            VALUES
-            (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                'Active'
-            )
-            """,
-            (
-                subject_id,
-                faculty_id,
-                academic_year,
-                component,
-                assignment_role,
-            ),
-        )
-
-        detail_id = result["id"]
-
-    audit(
-        "Saved Faculty Assignment Detail",
-        "Assignments",
-        str(detail_id),
-    )
-
-    return ok(
-        {
-            "id": detail_id,
-            "detail_id": detail_id,
-            "subject_id": int(subject_id),
-            "faculty_id": int(faculty_id),
-            "academic_year": academic_year,
-            "component": component,
-            "assignment_role": assignment_role,
-            "status": "Active",
-            "existing": bool(existing_detail),
-            "workload": workload_summary(
-                int(faculty_id),
-                academic_year,
-            ),
-        },
-        200 if existing_detail else 201,
-    )
-
-
-@bp.delete(
-    "/faculty-assignment-details/<int:subject_id>/<component>"
-)
-@require_auth(EDITORS)
-def clear_assignment_detail(
-    subject_id,
-    component,
-):
-
-    academic_year = request.args.get(
-        "academic_year",
-        "",
-    ).strip()
-
-    assignment_role = request.args.get(
-        "assignment_role",
-        "Main",
-    ).strip()
-
-    if component not in (
-        "Theory",
-        "Lab",
-    ):
-        return fail(
-            "Component must be Theory or Lab."
-        )
-
-    if assignment_role not in (
-        "Main",
-        "Co",
-    ):
-        return fail(
-            "Assignment role must be Main or Co."
-        )
-
-    if not academic_year:
-        return fail(
-            "Academic year is required."
-        )
-
-    detail = row(
-        """
-        SELECT
-            detail_id,
-            faculty_id
-        FROM faculty_subject_assignment_detail
-        WHERE
-            subject_id = %s
-            AND academic_year = %s
-            AND component = %s
-            AND assignment_role = %s
-            AND status = 'Active'
-        ORDER BY detail_id DESC
-        LIMIT 1
-        """,
-        (
-            subject_id,
-            academic_year,
-            component,
-            assignment_role,
-        ),
-    )
-
-    if not detail:
-        return ok(
-            {
-                "subject_id": subject_id,
-                "component": component,
-                "assignment_role": assignment_role,
-                "academic_year": academic_year,
-                "affected": 0,
-            }
-        )
-
-    execute(
-        """
-        UPDATE faculty_subject_assignment_detail
-        SET
-            status = 'Inactive',
-            updated_at = NOW()
-        WHERE detail_id = %s
-        """,
-        (
-            detail["detail_id"],
-        ),
-    )
-
-    # If Main was removed and no active component remains, deactivate
-    # the legacy parent assignment as well.
-    remaining = row(
-        """
-        SELECT COUNT(*) AS count
-        FROM faculty_subject_assignment_detail
-        WHERE
-            subject_id = %s
-            AND academic_year = %s
-            AND status = 'Active'
-        """,
-        (
-            subject_id,
-            academic_year,
-        ),
-    )
-
-    if (
-        assignment_role == "Main"
-        and int(
-            remaining.get(
-                "count",
-                0,
-            )
-            if remaining
-            else 0
-        ) == 0
-    ):
-        execute(
-            """
-            UPDATE faculty_subject_assignment
-            SET
-                status = 'Inactive',
-                updated_at = NOW()
-            WHERE
-                subject_id = %s
-                AND academic_year = %s
-                AND status = 'Active'
-            """,
-            (
-                subject_id,
-                academic_year,
-            ),
-        )
-
-    audit(
-        "Cleared Faculty Assignment Detail",
-        "Assignments",
-        f"{subject_id}:{component}:{assignment_role}:{academic_year}",
-    )
-
-    return ok(
-        {
-            "subject_id": subject_id,
-            "component": component,
-            "assignment_role": assignment_role,
-            "academic_year": academic_year,
-            "affected": 1,
-        }
     )
 
 

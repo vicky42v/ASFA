@@ -1,9 +1,18 @@
 {
   "name": "skit-ai-admin-dashboard",
+  "productName": "AI-ASFA",
+  "description": "AI Based Academic Scheduling and Faculty Allocation - Sri Krishna Institute of Technology",
   "private": true,
   "version": "1.0.0",
   "main": "electron-main.cjs",
   "type": "module",
+  "build": {
+    "appId": "com.skit.ai-asfa",
+    "productName": "AI-ASFA",
+    "win": {
+      "icon": "public/icon.ico"
+    }
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "vite build",
